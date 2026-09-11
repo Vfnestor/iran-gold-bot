@@ -1,4 +1,6 @@
 import re
+from datetime import datetime, timezone
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -7,6 +9,7 @@ TGJU_URL = "https://www.tgju.org/profile/geram18"
 
 
 def get_gold_18k():
+
     response = requests.get(
         TGJU_URL,
         headers={
@@ -21,10 +24,15 @@ def get_gold_18k():
 
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser"
+    )
 
-    # Find the current price near "نرخ فعلی"
-    text = soup.get_text(" ", strip=True)
+    text = soup.get_text(
+        " ",
+        strip=True
+    )
 
     match = re.search(
         r"نرخ فعلی\s*[:：]?\s*([\d,]+)",
@@ -32,15 +40,24 @@ def get_gold_18k():
     )
 
     if not match:
+
         raise RuntimeError(
             "Could not find 18K gold price on TGJU."
         )
 
-    price = int(match.group(1).replace(",", ""))
+    price = int(
+        match.group(1).replace(",", "")
+    )
+
+    # زمان دقیق دریافت قیمت
+    timestamp = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     return {
         "symbol": "gold_18k",
         "price": price,
         "currency": "IRR",
+        "timestamp": timestamp,
         "source": "tgju",
     }
