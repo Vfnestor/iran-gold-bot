@@ -1,11 +1,16 @@
+import os
 import sqlite3
 from datetime import datetime, timezone
 
 
-DB_PATH = "data/gold.db"
+DB_DIR = "data"
+DB_PATH = os.path.join(DB_DIR, "gold.db")
 
 
 def init_db():
+    # اطمینان از وجود پوشه data
+    os.makedirs(DB_DIR, exist_ok=True)
+
     conn = sqlite3.connect(DB_PATH)
 
     cursor = conn.cursor()
@@ -24,16 +29,23 @@ def init_db():
     conn.commit()
     conn.close()
 
+    print(f"🗄️ Database initialized: {DB_PATH}")
+
 
 def save_price(data):
-    conn = sqlite3.connect(DB_PATH)
-
-    cursor = conn.cursor()
+    # اطمینان از وجود پوشه data
+    os.makedirs(DB_DIR, exist_ok=True)
 
     timestamp = data.get("timestamp")
 
     if not timestamp:
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+    conn = sqlite3.connect(DB_PATH)
+
+    cursor = conn.cursor()
 
     cursor.execute("""
         INSERT INTO gold_prices (
@@ -53,10 +65,18 @@ def save_price(data):
     ))
 
     conn.commit()
+
+    print(
+        f"💾 Price saved: "
+        f"{data['price']} {data['currency']}"
+    )
+
     conn.close()
 
 
 def get_latest_prices(limit=10):
+    os.makedirs(DB_DIR, exist_ok=True)
+
     conn = sqlite3.connect(DB_PATH)
 
     cursor = conn.cursor()
@@ -75,5 +95,9 @@ def get_latest_prices(limit=10):
     rows = cursor.fetchall()
 
     conn.close()
+
+    print(
+        f"📊 History records found: {len(rows)}"
+    )
 
     return rows
