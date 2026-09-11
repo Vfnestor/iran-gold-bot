@@ -22,7 +22,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from data.collector_service import run_collector
 
 from data.collectors.tgju import get_gold_18k
-from data.collectors.servix import get_servix_gold
 
 from database import (
     init_db,
@@ -38,6 +37,11 @@ from candle_engine import build_1m_candle
 # ============================================================
 
 load_dotenv()
+
+print(
+    "DEBUG 1: main.py started",
+    flush=True
+)
 
 
 # ============================================================
@@ -356,11 +360,18 @@ async def text_handler(
 def test_servix():
 
     print(
-        "🧪 SERVIX: testing API connection...",
+        "🧪 SERVIX: starting test...",
         flush=True
     )
 
     try:
+
+        from data.collectors.servix import get_servix_gold
+
+        print(
+            "✅ SERVIX MODULE: imported successfully",
+            flush=True
+        )
 
         servix_data = get_servix_gold()
 
@@ -441,16 +452,42 @@ def main():
 
         return
 
+    print(
+        "✅ BOT_TOKEN found.",
+        flush=True
+    )
+
     # --------------------------------------------------------
     # DATABASE
     # --------------------------------------------------------
 
-    init_db()
+    try:
 
-    print(
-        "🗄️ Database initialized.",
-        flush=True
-    )
+        init_db()
+
+        print(
+            "🗄️ Database initialized.",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ DATABASE INITIALIZATION FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+        return
 
     # --------------------------------------------------------
     # SERVIX TEST
@@ -462,39 +499,166 @@ def main():
     # HEALTH SERVER
     # --------------------------------------------------------
 
-    health_thread = threading.Thread(
-        target=start_health_server,
-        daemon=True
-    )
+    try:
 
-    health_thread.start()
+        health_thread = threading.Thread(
+            target=start_health_server,
+            daemon=True
+        )
+
+        health_thread.start()
+
+        print(
+            "🌐 Health server thread started.",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ HEALTH SERVER FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # COLLECTOR
     # --------------------------------------------------------
 
-    collector_thread = threading.Thread(
-        target=run_collector,
-        daemon=True
-    )
+    try:
 
-    collector_thread.start()
+        collector_thread = threading.Thread(
+            target=run_collector,
+            daemon=True
+        )
 
-    print(
-        "📡 Collector started.",
-        flush=True
-    )
+        collector_thread.start()
+
+        print(
+            "📡 Collector started.",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ COLLECTOR START FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # TELEGRAM APPLICATION
     # --------------------------------------------------------
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    try:
+
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .build()
+        )
+
+        print(
+            "🤖 Telegram application created.",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ TELEGRAM APPLICATION FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+        return
 
     # --------------------------------------------------------
     # HANDLERS
-    #
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    print(
+        "✅ Telegram handlers registered.",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # START BOT
+    # --------------------------------------------------------
+
+    print(
+        "🤖 Telegram bot starting...",
+        flush=True
+    )
+
+    try:
+
+        application.run_polling()
+
+    except Exception as error:
+
+        print(
+            "❌ TELEGRAM POLLING FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
