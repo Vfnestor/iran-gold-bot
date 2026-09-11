@@ -17,10 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-from http.server import (
-    BaseHTTPRequestHandler,
-    HTTPServer,
-)
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from data.collector_service import run_collector
 
@@ -30,64 +27,42 @@ from database import (
     init_db,
     save_price,
     get_latest_prices,
-    get_latest_candle,
-    get_database_stats,
 )
 
 from candle_engine import build_1m_candle
 
 
-# ==========================================
-# Environment
-# ==========================================
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv(
-    "BOT_TOKEN"
-)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 PORT = int(
-    os.getenv(
-        "PORT",
-        "10000"
-    )
+    os.getenv("PORT", "10000")
 )
 
 
-# ==========================================
-# Telegram Keyboard
-# ==========================================
+# ============================================================
+# MAIN KEYBOARD
+# ============================================================
 
 def get_main_keyboard():
 
     keyboard = [
-
         [
-            KeyboardButton(
-                "🟡 قیمت لحظه‌ای"
-            ),
-            KeyboardButton(
-                "📊 تاریخچه"
-            ),
+            KeyboardButton("🟡 قیمت لحظه‌ای"),
+            KeyboardButton("📊 تاریخچه"),
         ],
-
         [
-            KeyboardButton(
-                "🕯️ کندل ۱ دقیقه‌ای"
-            ),
-            KeyboardButton(
-                "📡 وضعیت سیستم"
-            ),
+            KeyboardButton("🕯️ کندل ۱ دقیقه‌ای"),
+            KeyboardButton("📡 وضعیت سیستم"),
         ],
-
         [
-            KeyboardButton(
-                "🔄 بروزرسانی"
-            ),
-            KeyboardButton(
-                "ℹ️ راهنما"
-            ),
+            KeyboardButton("🔄 بروزرسانی"),
+            KeyboardButton("ℹ️ راهنما"),
         ],
     ]
 
@@ -98,9 +73,9 @@ def get_main_keyboard():
     )
 
 
-# ==========================================
-# Health Server
-# ==========================================
+# ============================================================
+# HEALTH SERVER
+# ============================================================
 
 class HealthHandler(
     BaseHTTPRequestHandler
@@ -108,9 +83,7 @@ class HealthHandler(
 
     def do_GET(self):
 
-        self.send_response(
-            200
-        )
+        self.send_response(200)
 
         self.send_header(
             "Content-Type",
@@ -134,111 +107,102 @@ class HealthHandler(
 
 def run_health_server():
 
-    server = HTTPServer(
-        (
-            "0.0.0.0",
-            PORT
-        ),
-        HealthHandler
-    )
+    try:
 
-    print(
-        f"🌐 Health server running "
-        f"on port {PORT}"
-    )
+        server = HTTPServer(
+            (
+                "0.0.0.0",
+                PORT
+            ),
+            HealthHandler
+        )
 
-    server.serve_forever()
+        print(
+            f"🌐 HEALTH: Server running on port {PORT}",
+            flush=True
+        )
+
+        server.serve_forever()
+
+    except Exception as error:
+
+        print(
+            "❌ HEALTH SERVER ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True
+        )
 
 
-# ==========================================
-# /start
-# ==========================================
+# ============================================================
+# TELEGRAM COMMANDS
+# ============================================================
 
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    print(
+        "📨 TELEGRAM: /start received",
+        flush=True
+    )
+
     await update.message.reply_text(
 
         "🟡 سلام!\n\n"
-
         "من Iran Gold AI هستم.\n\n"
-
-        "📊 سیستم جمع‌آوری قیمت "
-        "طلای ایران فعال است.\n\n"
-
+        "📊 سیستم جمع‌آوری قیمت طلای ایران فعال است.\n\n"
         "📡 داده‌ها به صورت خودکار "
-        "جمع‌آوری می‌شوند.\n\n"
-
-        "🕯️ کندل‌های ۱ دقیقه‌ای "
-        "در حال ساخته شدن هستند.\n\n"
-
+        "جمع‌آوری و ذخیره می‌شوند.\n\n"
         "👇 از منوی زیر استفاده کن.",
 
         reply_markup=get_main_keyboard()
     )
 
 
-# ==========================================
-# /help
-# ==========================================
-
 async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
+    print(
+        "📨 TELEGRAM: /help received",
+        flush=True
+    )
 
     await update.message.reply_text(
 
         "ℹ️ راهنمای Iran Gold AI\n\n"
 
         "🟡 قیمت لحظه‌ای\n"
-        "آخرین قیمت طلای ۱۸ عیار "
-        "از منبع فعلی.\n\n"
+        "آخرین قیمت طلای ۱۸ عیار\n\n"
 
         "📊 تاریخچه\n"
-        "آخرین قیمت‌های ذخیره‌شده "
-        "در دیتابیس.\n\n"
+        "آخرین قیمت‌های ذخیره‌شده\n\n"
 
         "🕯️ کندل ۱ دقیقه‌ای\n"
-        "نمایش آخرین کندل ۱ دقیقه‌ای "
-        "ساخته‌شده.\n\n"
+        "آخرین کندل یک دقیقه‌ای\n\n"
 
         "📡 وضعیت سیستم\n"
-        "تعداد داده‌های خام، تعداد "
-        "کندل‌ها و آخرین وضعیت دیتابیس.\n\n"
+        "وضعیت جمع‌آوری و دیتابیس\n\n"
 
         "🔄 بروزرسانی\n"
-        "دریافت دستی قیمت جدید و "
-        "به‌روزرسانی کندل.\n\n"
-
-        "ℹ️ راهنما\n"
-        "نمایش همین راهنما.\n\n"
+        "دریافت دستی قیمت جدید\n\n"
 
         "🔮 مراحل بعدی پروژه:\n"
         "• کندل‌های چندبازه‌ای\n"
-        "• نمودار قیمت\n"
         "• RSI\n"
         "• MACD\n"
-        "• میانگین‌های متحرک\n"
-        "• ATR\n"
         "• حمایت و مقاومت\n"
-        "• تحلیل روند\n"
+        "• روند بازار\n"
         "• مناطق احتمالی خرید\n"
-        "• اهداف کوتاه‌مدت\n"
-        "• اهداف هفتگی\n"
-        "• اهداف ماهانه\n"
-        "• تحلیل بلندمدت\n"
-        "• بک‌تست",
+        "• اهداف قیمتی\n"
+        "• بک‌تست\n"
+        "• تحلیل چندافقی",
 
         reply_markup=get_main_keyboard()
     )
 
-
-# ==========================================
-# Manual Price
-# ==========================================
 
 async def price_command(
     update: Update,
@@ -248,22 +212,18 @@ async def price_command(
     try:
 
         print(
-            "👤 MANUAL: Price requested"
+            "👤 TELEGRAM: Price requested",
+            flush=True
         )
 
         data = get_gold_18k()
 
-        save_price(
-            data
-        )
+        save_price(data)
 
         print(
-            "💾 MANUAL: Price saved."
+            "💾 TELEGRAM: Price saved.",
+            flush=True
         )
-
-        # ------------------------------
-        # Update 1M Candle
-        # ------------------------------
 
         try:
 
@@ -274,16 +234,18 @@ async def price_command(
             if candle:
 
                 print(
-                    "🕯️ MANUAL: "
-                    "1M candle updated."
+                    "🕯️ TELEGRAM: "
+                    "1M candle updated.",
+                    flush=True
                 )
 
         except Exception as error:
 
             print(
-                "❌ MANUAL CANDLE ERROR: "
+                "❌ TELEGRAM CANDLE ERROR: "
                 f"{type(error).__name__}: "
-                f"{error}"
+                f"{error}",
+                flush=True
             )
 
         price = data["price"]
@@ -298,7 +260,7 @@ async def price_command(
             f"📡 منبع: "
             f"{data['source']}\n"
 
-            f"🕐 زمان: "
+            f"🕐 زمان دریافت: "
             f"{data['timestamp']}",
 
             reply_markup=get_main_keyboard()
@@ -307,26 +269,19 @@ async def price_command(
     except Exception as error:
 
         print(
-            "❌ MANUAL PRICE ERROR: "
-            f"{type(error).__name__}: "
-            f"{error}"
+            "❌ TELEGRAM PRICE ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True
         )
 
         await update.message.reply_text(
 
-            "❌ در دریافت قیمت مشکلی "
-            "پیش آمد.\n\n"
-
-            f"{type(error).__name__}: "
-            f"{error}",
+            "❌ در دریافت قیمت مشکلی پیش آمد.\n\n"
+            f"{type(error).__name__}: {error}",
 
             reply_markup=get_main_keyboard()
         )
 
-
-# ==========================================
-# History
-# ==========================================
 
 async def history_command(
     update: Update,
@@ -335,9 +290,12 @@ async def history_command(
 
     try:
 
-        rows = get_latest_prices(
-            10
+        print(
+            "📊 TELEGRAM: History requested",
+            flush=True
         )
+
+        rows = get_latest_prices(10)
 
         if not rows:
 
@@ -389,24 +347,18 @@ async def history_command(
 
         print(
             "❌ HISTORY ERROR: "
-            f"{type(error).__name__}: "
-            f"{error}"
+            f"{type(error).__name__}: {error}",
+            flush=True
         )
 
         await update.message.reply_text(
 
             "❌ خطا در خواندن تاریخچه:\n\n"
-
-            f"{type(error).__name__}: "
-            f"{error}",
+            f"{type(error).__name__}: {error}",
 
             reply_markup=get_main_keyboard()
         )
 
-
-# ==========================================
-# 1M Candle
-# ==========================================
 
 async def candle_command(
     update: Update,
@@ -416,61 +368,47 @@ async def candle_command(
     try:
 
         print(
-            "👤 USER: 1M candle requested"
+            "🕯️ TELEGRAM: Candle requested",
+            flush=True
         )
 
-        candle = get_latest_candle(
-            symbol="gold_18k",
-            timeframe="1m"
+        candle = build_1m_candle(
+            symbol="gold_18k"
         )
 
         if not candle:
 
             await update.message.reply_text(
 
-                "📭 هنوز کندل ۱ دقیقه‌ای "
-                "در دیتابیس وجود ندارد.",
+                "🕯️ هنوز اطلاعات کافی "
+                "برای ساخت کندل ۱ دقیقه‌ای وجود ندارد.",
 
                 reply_markup=get_main_keyboard()
             )
 
             return
 
-        timestamp = candle[0]
-
-        open_price = candle[1]
-
-        high_price = candle[2]
-
-        low_price = candle[3]
-
-        close_price = candle[4]
-
-        volume = candle[5]
-
         message = (
 
             "🕯️ آخرین کندل ۱ دقیقه‌ای\n\n"
 
-            f"🕐 زمان: {timestamp}\n\n"
+            f"🕐 زمان: "
+            f"{candle['timestamp']}\n\n"
 
             f"🟢 Open: "
-            f"{open_price:,} ریال\n"
+            f"{candle['open']:,} ریال\n"
 
-            f"🔼 High: "
-            f"{high_price:,} ریال\n"
+            f"🔺 High: "
+            f"{candle['high']:,} ریال\n"
 
-            f"🔽 Low: "
-            f"{low_price:,} ریال\n"
+            f"🔻 Low: "
+            f"{candle['low']:,} ریال\n"
 
             f"🔴 Close: "
-            f"{close_price:,} ریال\n\n"
+            f"{candle['close']:,} ریال\n\n"
 
-            f"📊 Samples: {volume}\n\n"
-
-            "⚠️ این کندل فعلاً صرفاً "
-            "داده بازار است و هنوز "
-            "سیگنال معاملاتی نیست."
+            f"📊 Samples: "
+            f"{candle['volume']}"
         )
 
         await update.message.reply_text(
@@ -483,25 +421,19 @@ async def candle_command(
     except Exception as error:
 
         print(
-            "❌ CANDLE ERROR: "
-            f"{type(error).__name__}: "
-            f"{error}"
+            "❌ CANDLE COMMAND ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True
         )
 
         await update.message.reply_text(
 
-            "❌ خطا در خواندن کندل:\n\n"
-
-            f"{type(error).__name__}: "
-            f"{error}",
+            "❌ خطا در دریافت کندل:\n\n"
+            f"{type(error).__name__}: {error}",
 
             reply_markup=get_main_keyboard()
         )
 
-
-# ==========================================
-# System Status
-# ==========================================
 
 async def status_command(
     update: Update,
@@ -511,89 +443,73 @@ async def status_command(
     try:
 
         print(
-            "👤 USER: System status requested"
+            "📡 TELEGRAM: Status requested",
+            flush=True
         )
 
-        stats = get_database_stats()
+        rows = get_latest_prices(1)
 
-        raw_count = stats[
-            "raw_price_count"
-        ]
+        if rows:
 
-        candle_count = stats[
-            "candle_count"
-        ]
+            latest = rows[0]
 
-        latest_price = stats[
-            "latest_price"
-        ]
+            price = latest[0]
 
-        latest_candle = stats[
-            "latest_candle"
-        ]
+            currency = latest[1]
 
-        message = (
-            "📡 وضعیت Iran Gold AI\n\n"
+            source = latest[2]
 
-            "🟢 Bot: فعال\n"
-            "🟢 Collector: فعال\n"
-            "🟢 Database: فعال\n\n"
+            timestamp = latest[3]
 
-            f"📥 داده‌های خام: "
-            f"{raw_count:,}\n"
+            database_status = "🟢 فعال"
 
-            f"🕯️ کندل‌های ذخیره‌شده: "
-            f"{candle_count:,}\n"
-        )
+            price_status = (
+                f"💰 {price:,} {currency}"
+            )
 
-        if latest_price:
+            source_status = (
+                f"📡 {source}"
+            )
 
-            message += (
-
-                "\n🟡 آخرین قیمت:\n"
-
-                f"💰 {latest_price[0]:,} "
-                f"{latest_price[1]}\n"
-
-                f"📡 {latest_price[2]}\n"
-
-                f"🕐 {latest_price[3]}\n"
+            time_status = (
+                f"🕐 {timestamp}"
             )
 
         else:
 
-            message += (
-                "\n🟡 هنوز قیمت ثبت نشده است.\n"
+            database_status = "🟡 فعال ولی خالی"
+
+            price_status = (
+                "💰 هنوز داده‌ای ثبت نشده"
             )
 
-        if latest_candle:
-
-            message += (
-
-                "\n🕯️ آخرین کندل 1M:\n"
-
-                f"🕐 {latest_candle[0]}\n"
-
-                f"O: {latest_candle[1]:,}\n"
-
-                f"H: {latest_candle[2]:,}\n"
-
-                f"L: {latest_candle[3]:,}\n"
-
-                f"C: {latest_candle[4]:,}\n"
-
-                f"Samples: {latest_candle[5]}\n"
+            source_status = (
+                "📡 ---"
             )
 
-        else:
-
-            message += (
-                "\n🕯️ هنوز کندلی ثبت نشده است.\n"
+            time_status = (
+                "🕐 ---"
             )
 
         await update.message.reply_text(
 
-            message,
+            "📡 وضعیت Iran Gold AI\n\n"
+
+            "🤖 Telegram Bot: 🟢 فعال\n"
+
+            f"🗄️ Database: "
+            f"{database_status}\n"
+
+            f"📥 آخرین قیمت: "
+            f"{price_status}\n"
+
+            f"{source_status}\n"
+
+            f"{time_status}\n\n"
+
+            "🕯️ Candle Engine: 🟢 فعال\n"
+
+            "📊 Collector: 🟢 فعال",
 
             reply_markup=get_main_keyboard()
         )
@@ -602,24 +518,22 @@ async def status_command(
 
         print(
             "❌ STATUS ERROR: "
-            f"{type(error).__name__}: "
-            f"{error}"
+            f"{type(error).__name__}: {error}",
+            flush=True
         )
 
         await update.message.reply_text(
 
-            "❌ خطا در دریافت وضعیت سیستم:\n\n"
-
-            f"{type(error).__name__}: "
-            f"{error}",
+            "❌ خطا در بررسی وضعیت سیستم:\n\n"
+            f"{type(error).__name__}: {error}",
 
             reply_markup=get_main_keyboard()
         )
 
 
-# ==========================================
-# Button Handler
-# ==========================================
+# ============================================================
+# MENU HANDLER
+# ============================================================
 
 async def menu_handler(
     update: Update,
@@ -629,7 +543,8 @@ async def menu_handler(
     text = update.message.text
 
     print(
-        f"🔘 BUTTON PRESSED: {text}"
+        f"🔘 TELEGRAM BUTTON: {text}",
+        flush=True
     )
 
     if text == "🟡 قیمت لحظه‌ای":
@@ -685,64 +600,154 @@ async def menu_handler(
         )
 
 
-# ==========================================
-# Main
-# ==========================================
+# ============================================================
+# TELEGRAM ERROR HANDLER
+# ============================================================
+
+async def telegram_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    error = context.error
+
+    print(
+        "🚨 TELEGRAM ERROR",
+        flush=True
+    )
+
+    print(
+        f"Type: {type(error).__name__}",
+        flush=True
+    )
+
+    print(
+        f"Message: {error}",
+        flush=True
+    )
+
+    print(
+        "--------------------------------",
+        flush=True
+    )
+
+
+# ============================================================
+# APPLICATION STARTUP
+# ============================================================
 
 def main():
 
+    print(
+        "========================================",
+        flush=True
+    )
+
+    print(
+        "🚀 IRAN GOLD AI BOT STARTING",
+        flush=True
+    )
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # TOKEN CHECK
+    # --------------------------------------------------------
+
     if not BOT_TOKEN:
+
+        print(
+            "❌ STARTUP ERROR: BOT_TOKEN is missing.",
+            flush=True
+        )
 
         raise RuntimeError(
             "BOT_TOKEN is not configured."
         )
 
-    # ======================================
-    # Database
-    # ======================================
+    print(
+        "🔐 BOT_TOKEN: configured",
+        flush=True
+    )
 
-    init_db()
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
 
-    # ======================================
-    # Health Server
-    # ======================================
+    try:
+
+        init_db()
+
+        print(
+            "🗄️ DATABASE: initialized successfully",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ DATABASE INIT ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True
+        )
+
+        raise
+
+    # --------------------------------------------------------
+    # HEALTH SERVER
+    # --------------------------------------------------------
 
     health_thread = threading.Thread(
-
         target=run_health_server,
-
         daemon=True
     )
 
     health_thread.start()
 
-    # ======================================
-    # Collector Service
-    # ======================================
-
-    collector_thread = threading.Thread(
-
-        target=run_collector,
-
-        daemon=True
+    print(
+        "🌐 HEALTH: thread started",
+        flush=True
     )
 
-    collector_thread.start()
+    # --------------------------------------------------------
+    # TELEGRAM APPLICATION
+    # --------------------------------------------------------
 
-    # ======================================
-    # Telegram
-    # ======================================
+    try:
 
-    application = (
-        Application
-        .builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+        print(
+            "📡 TELEGRAM: creating application...",
+            flush=True
+        )
 
-    # ======================================
-    # Commands
-    # ======================================
+        application = (
+            Application
+            .builder()
+            .token(BOT_TOKEN)
+            .build()
+        )
+
+        print(
+            "📡 TELEGRAM: application created",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ TELEGRAM APPLICATION ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True
+        )
+
+        raise
+
+    # --------------------------------------------------------
+    # HANDLERS
+    # --------------------------------------------------------
 
     application.add_handler(
         CommandHandler(
@@ -786,31 +791,97 @@ def main():
         )
     )
 
-    # ======================================
-    # Buttons
-    # ======================================
-
     application.add_handler(
-
         MessageHandler(
-
             filters.TEXT
             & ~filters.COMMAND,
-
             menu_handler
         )
     )
 
-    print(
-        "🤖 Iran Gold AI Bot is running..."
+    application.add_error_handler(
+        telegram_error_handler
     )
 
-    application.run_polling()
+    print(
+        "🧩 TELEGRAM: handlers registered",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # COLLECTOR
+    # --------------------------------------------------------
+
+    collector_thread = threading.Thread(
+        target=run_collector,
+        daemon=True
+    )
+
+    collector_thread.start()
+
+    print(
+        "📡 COLLECTOR: thread started",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # TELEGRAM POLLING
+    # --------------------------------------------------------
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    print(
+        "🤖 Iran Gold AI Bot is running...",
+        flush=True
+    )
+
+    print(
+        "📡 TELEGRAM: starting polling...",
+        flush=True
+    )
+
+    print(
+        "========================================",
+        flush=True
+    )
+
+    try:
+
+        application.run_polling(
+            drop_pending_updates=True
+        )
+
+    except Exception as error:
+
+        print(
+            "🚨 POLLING ERROR",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+        print(
+            "========================================",
+            flush=True
+        )
+
+        raise
 
 
-# ==========================================
-# Entry Point
-# ==========================================
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
 
