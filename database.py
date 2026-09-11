@@ -30,6 +30,11 @@ def save_price(data):
 
     cursor = conn.cursor()
 
+    timestamp = data.get("timestamp")
+
+    if not timestamp:
+        timestamp = datetime.now(timezone.utc).isoformat()
+
     cursor.execute("""
         INSERT INTO gold_prices (
             symbol,
@@ -44,8 +49,31 @@ def save_price(data):
         data["price"],
         data["currency"],
         data["source"],
-        datetime.now(timezone.utc).isoformat()
+        timestamp
     ))
 
     conn.commit()
     conn.close()
+
+
+def get_latest_prices(limit=10):
+    conn = sqlite3.connect(DB_PATH)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            price,
+            currency,
+            source,
+            timestamp
+        FROM gold_prices
+        ORDER BY id DESC
+        LIMIT ?
+    """, (limit,))
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
