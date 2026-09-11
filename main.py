@@ -12,6 +12,7 @@ from telegram.ext import (
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from data.collectors.tgju import get_gold_18k
+from database import init_db, save_price
 
 
 load_dotenv()
@@ -33,7 +34,9 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_health_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+
     print(f"🌐 Health server running on port {PORT}")
+
     server.serve_forever()
 
 
@@ -58,6 +61,9 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         data = get_gold_18k()
 
+        # ذخیره قیمت در دیتابیس
+        save_price(data)
+
         price = data["price"]
 
         await update.message.reply_text(
@@ -79,14 +85,21 @@ def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not configured.")
 
+    # ایجاد دیتابیس و جدول در صورت نبودن
+    init_db()
+
+    # سرور Health برای Render
     health_thread = threading.Thread(
         target=run_health_server,
         daemon=True,
     )
+
     health_thread.start()
 
+    # ساخت ربات تلگرام
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # دستورات
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -101,6 +114,7 @@ def main():
 
     print("🤖 Iran Gold AI Bot is running...")
 
+    # اجرای ربات
     application.run_polling()
 
 
