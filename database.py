@@ -7,13 +7,32 @@ DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "gold.db")
 
 
-def init_db():
-    # اطمینان از وجود پوشه data
+# ==========================================
+# Database Connection
+# ==========================================
+
+def get_connection():
+
     os.makedirs(DB_DIR, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
 
+    return conn
+
+
+# ==========================================
+# Initialize Database
+# ==========================================
+
+def init_db():
+
+    conn = get_connection()
+
     cursor = conn.cursor()
+
+    # ======================================
+    # Raw Gold Prices
+    # ======================================
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_prices (
@@ -26,24 +45,89 @@ def init_db():
         )
     """)
 
+    # ======================================
+    # Candles
+    # ======================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS gold_candles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            symbol TEXT NOT NULL,
+
+            timeframe TEXT NOT NULL,
+
+            timestamp TEXT NOT NULL,
+
+            open INTEGER NOT NULL,
+            high INTEGER NOT NULL,
+            low INTEGER NOT NULL,
+            close INTEGER NOT NULL,
+
+            volume INTEGER DEFAULT 0,
+
+            created_at TEXT NOT NULL,
+
+            UNIQUE(
+                symbol,
+                timeframe,
+                timestamp
+            )
+        )
+    """)
+
+    # ======================================
+    # Indexes
+    # ======================================
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_gold_prices_timestamp
+        ON gold_prices(timestamp)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_gold_prices_source
+        ON gold_prices(source)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_gold_candles_timeframe
+        ON gold_candles(timeframe)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_gold_candles_timestamp
+        ON gold_candles(timestamp)
+    """)
+
     conn.commit()
+
     conn.close()
 
-    print(f"🗄️ Database initialized: {DB_PATH}")
+    print(
+        f"🗄️ Database initialized: {DB_PATH}"
+    )
 
+
+# ==========================================
+# Save Raw Price
+# ==========================================
 
 def save_price(data):
-    # اطمینان از وجود پوشه data
-    os.makedirs(DB_DIR, exist_ok=True)
 
     timestamp = data.get("timestamp")
 
     if not timestamp:
+
         timestamp = datetime.now(
             timezone.utc
         ).isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
 
     cursor = conn.cursor()
 
@@ -66,18 +150,22 @@ def save_price(data):
 
     conn.commit()
 
-    print(
-        f"💾 Price saved: "
-        f"{data['price']} {data['currency']}"
-    )
-
     conn.close()
 
+    print(
+        f"💾 Price saved: "
+        f"{data['price']:,} "
+        f"{data['currency']}"
+    )
+
+
+# ==========================================
+# Get Latest Prices
+# ==========================================
 
 def get_latest_prices(limit=10):
-    os.makedirs(DB_DIR, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_connection()
 
     cursor = conn.cursor()
 
@@ -90,14 +178,120 @@ def get_latest_prices(limit=10):
         FROM gold_prices
         ORDER BY id DESC
         LIMIT ?
-    """, (limit,))
+    """, (
+        limit,
+    ))
 
     rows = cursor.fetchall()
 
     conn.close()
 
     print(
-        f"📊 History records found: {len(rows)}"
+        f"📊 History records found: "
+        f"{len(rows)}"
     )
+
+    return rows
+
+
+# ==========================================
+# Save Candle
+# ==========================================
+
+def save_candle(
+    symbol,
+    timeframe,
+    timestamp,
+    open_price,
+    high_price,
+    low_price,
+    close_price,
+    volume=0
+):
+
+    created_at = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO gold_candles (
+            symbol,
+            timeframe,
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        symbol,
+        timeframe,
+        timestamp,
+        open_price,
+        high_price,
+        low_price,
+        close_price,
+        volume,
+        created_at
+    ))
+
+    conn.commit()
+
+    conn.close()
+
+    print(
+        f"🕯️ Candle saved: "
+        f"{symbol} "
+        f"{timeframe} "
+        f"{timestamp}"
+    )
+
+
+# ==========================================
+# Get Candles
+# ==========================================
+
+def get_candles(
+    symbol="gold_18k",
+    timeframe="1m",
+    limit=100
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume
+        FROM gold_candles
+
+        WHERE symbol = ?
+        AND timeframe = ?
+
+        ORDER BY timestamp DESC
+
+        LIMIT ?
+    """, (
+        symbol,
+        timeframe,
+        limit
+    ))
+
+    rows = cursor.fetchall()
+
+    conn.close()
 
     return rows
