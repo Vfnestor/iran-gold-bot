@@ -23,6 +23,8 @@ from data.collector_service import run_collector
 
 from data.collectors.tgju import get_gold_18k
 
+from data.collectors.servix import get_servix_gold
+
 from database import (
     init_db,
     save_price,
@@ -95,6 +97,7 @@ class HealthHandler(
         self.wfile.write(
             b"Iran Gold AI Bot is running."
         )
+
 
     def log_message(
         self,
@@ -422,7 +425,8 @@ async def candle_command(
 
         print(
             "❌ CANDLE COMMAND ERROR: "
-            f"{type(error).__name__}: {error}",
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True
         )
 
@@ -674,6 +678,71 @@ def main():
     )
 
     # --------------------------------------------------------
+    # SERVIX TEST
+    # --------------------------------------------------------
+
+    print(
+        "🧪 SERVIX: testing API connection...",
+        flush=True
+    )
+
+    try:
+
+        servix_data = get_servix_gold()
+
+        print(
+            "✅ SERVIX: API connection successful",
+            flush=True
+        )
+
+        print(
+            f"📡 SERVIX SOURCE: "
+            f"{servix_data['source']}",
+            flush=True
+        )
+
+        print(
+            f"🪙 SERVIX SYMBOL: "
+            f"{servix_data['symbol']}",
+            flush=True
+        )
+
+        print(
+            f"💰 SERVIX PRICE RIAL: "
+            f"{servix_data['price_riel']:,}",
+            flush=True
+        )
+
+        print(
+            f"💵 SERVIX PRICE TOMAN: "
+            f"{servix_data['price_toman']:,}",
+            flush=True
+        )
+
+        print(
+            f"🕐 SERVIX BUSINESS TIME: "
+            f"{servix_data['business_time']}",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ SERVIX TEST FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+    # --------------------------------------------------------
     # DATABASE
     # --------------------------------------------------------
 
@@ -886,3 +955,17 @@ def main():
 if __name__ == "__main__":
 
     main()
+
+بعد از جایگزینی، Commit changes بزن و صبر کن Render دوباره Deploy شود.
+
+بعد برو به Render → Logs و دنبال این قسمت بگرد:
+
+🧪 SERVIX: testing API connection...
+
+اگر موفق باشد باید بعدش این را ببینیم:
+
+✅ SERVIX: API connection successful
+
+فعلاً دکمه «قیمت لحظه‌ای» همان TGJU باقی می‌ماند. این نسخه فقط اتصال Servix را تست می‌کند.
+
+خروجی بخش "SERVIX" از Logs را بفرست؛ بعد می‌ریم سراغ وصل کردن واقعی دو منبع.
