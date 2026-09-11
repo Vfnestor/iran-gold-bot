@@ -1,4 +1,5 @@
 import os
+import threading
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -8,10 +9,30 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", "10000"))
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Iran Gold AI Bot is running.")
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    print(f"🌐 Health server running on port {PORT}")
+    server.serve_forever()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -32,9 +53,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN is not configured."
-        )
+        raise RuntimeError("BOT_TOKEN is not configured.")
+
+    # Start a tiny HTTP server so Render detects an open port.
+    health_thread = threading.Thread(
+        target=run_health_server,
+        daemon=True,
+    )
+    health_thread.start()
 
     application = Application.builder().token(BOT_TOKEN).build()
 
