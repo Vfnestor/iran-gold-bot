@@ -21,11 +21,14 @@ from telegram.ext import (
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from data.collectors.tgju import get_gold_18k
+
 from database import (
     init_db,
     save_price,
     get_latest_prices,
 )
+
+from candle_engine import build_1m_candle
 
 
 load_dotenv()
@@ -38,7 +41,6 @@ PORT = int(os.getenv("PORT", "10000"))
 # ==========================================
 
 # فعلاً هر 60 ثانیه یک بار قیمت دریافت می‌شود.
-# بعد از تکمیل تست‌ها می‌توانیم آن را به 300 ثانیه تغییر دهیم.
 COLLECT_INTERVAL = 60
 
 
@@ -124,6 +126,10 @@ def automatic_price_collector():
 
         try:
 
+            # ==================================
+            # Get Price
+            # ==================================
+
             print(
                 "📡 AUTO: Requesting price from TGJU..."
             )
@@ -136,11 +142,39 @@ def automatic_price_collector():
                 f"{data['currency']}"
             )
 
+            # ==================================
+            # Save Raw Price
+            # ==================================
+
             save_price(data)
 
             print(
                 "💾 AUTO: Price saved successfully."
             )
+
+            # ==================================
+            # Build 1 Minute Candle
+            # ==================================
+
+            try:
+
+                candle = build_1m_candle(
+                    symbol=data["symbol"]
+                )
+
+                if candle:
+
+                    print(
+                        "🕯️ AUTO: 1M candle updated."
+                    )
+
+            except Exception as candle_error:
+
+                print(
+                    "❌ CANDLE ENGINE ERROR: "
+                    f"{type(candle_error).__name__}: "
+                    f"{candle_error}"
+                )
 
         except Exception as error:
 
@@ -223,6 +257,27 @@ async def price_command(
         print(
             "💾 MANUAL: Price saved successfully."
         )
+
+        # ساخت/به‌روزرسانی کندل
+        try:
+
+            candle = build_1m_candle(
+                symbol=data["symbol"]
+            )
+
+            if candle:
+
+                print(
+                    "🕯️ MANUAL: 1M candle updated."
+                )
+
+        except Exception as candle_error:
+
+            print(
+                "❌ MANUAL CANDLE ERROR: "
+                f"{type(candle_error).__name__}: "
+                f"{candle_error}"
+            )
 
         price = data["price"]
 
