@@ -66,13 +66,13 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📡 منبع: {data['source']}"
         )
 
-    except Exception as error:
-        print(f"TGJU error: {error}")
+        except Exception as error:
+        except(f"TGJU error: {error}")
 
-        await update.message.reply_text(
-            "❌ در دریافت قیمت طلا مشکلی پیش آمد.\n"
-            "لطفاً دوباره تلاش کن."
-        )
+           awaitt update.message.reply_text(
+               f"❌ خطای دریافت قیمت:\n\n"
+               ff"{type(error).__name__}: {error}"
+         )
 
 
 def main():
