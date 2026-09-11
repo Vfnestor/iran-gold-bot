@@ -4,11 +4,18 @@ import time
 
 from dotenv import load_dotenv
 
-from telegram import Update
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,12 +34,36 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
 # ==========================================
-# TEST MODE
-# فعلاً هر 60 ثانیه یک بار قیمت می‌گیریم
-# بعد از اطمینان، دوباره به 300 ثانیه برمی‌گردانیم.
+# Automatic Collector
 # ==========================================
 
+# فعلاً هر 60 ثانیه یک بار قیمت دریافت می‌شود.
+# بعد از تکمیل تست‌ها می‌توانیم آن را به 300 ثانیه تغییر دهیم.
 COLLECT_INTERVAL = 60
+
+
+# ==========================================
+# Main Keyboard
+# ==========================================
+
+def get_main_keyboard():
+
+    keyboard = [
+        [
+            KeyboardButton("🟡 قیمت لحظه‌ای"),
+            KeyboardButton("📊 تاریخچه"),
+        ],
+        [
+            KeyboardButton("🔄 بروزرسانی"),
+            KeyboardButton("ℹ️ راهنما"),
+        ],
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
 
 # ==========================================
@@ -42,6 +73,7 @@ COLLECT_INTERVAL = 60
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
+
         self.send_response(200)
 
         self.send_header(
@@ -136,8 +168,10 @@ async def start(
 
     await update.message.reply_text(
         "🟡 سلام!\n\n"
-        "من Iran Gold AI هستم.\n"
-        "به‌زودی تحلیل بازار طلای ایران را برایت انجام می‌دهم."
+        "من Iran Gold AI هستم.\n\n"
+        "📊 سیستم جمع‌آوری قیمت طلای ایران فعال است.\n\n"
+        "👇 برای استفاده از ربات از دکمه‌های زیر استفاده کن.",
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -151,11 +185,19 @@ async def help_command(
 ):
 
     await update.message.reply_text(
-        "📌 دستورات فعلی:\n\n"
-        "/start - شروع ربات\n"
-        "/help - راهنما\n"
-        "/price - قیمت طلای ۱۸ عیار\n"
-        "/history - تاریخچه قیمت‌ها"
+        "ℹ️ راهنمای Iran Gold AI\n\n"
+        "🟡 قیمت لحظه‌ای\n"
+        "دریافت آخرین قیمت طلای ۱۸ عیار از TGJU\n\n"
+        "📊 تاریخچه\n"
+        "نمایش آخرین قیمت‌های ذخیره‌شده\n\n"
+        "🔄 بروزرسانی\n"
+        "دریافت قیمت جدید و ذخیره آن در دیتابیس\n\n"
+        "ℹ️ راهنما\n"
+        "نمایش همین راهنما\n\n"
+        "🔮 در مراحل بعد:\n"
+        "تحلیل بازار، روند، مناطق خرید، "
+        "اهداف قیمتی و امتیاز سیگنال اضافه خواهد شد.",
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -171,7 +213,7 @@ async def price_command(
     try:
 
         print(
-            "👤 MANUAL: /price requested"
+            "👤 MANUAL: Price requested"
         )
 
         data = get_gold_18k()
@@ -187,7 +229,8 @@ async def price_command(
         await update.message.reply_text(
             "🟡 طلای ۱۸ عیار\n\n"
             f"💰 قیمت: {price:,} ریال\n"
-            f"📡 منبع: {data['source']}"
+            f"📡 منبع: {data['source']}",
+            reply_markup=get_main_keyboard()
         )
 
     except Exception as error:
@@ -199,7 +242,8 @@ async def price_command(
 
         await update.message.reply_text(
             "❌ خطای دریافت قیمت:\n\n"
-            f"{type(error).__name__}: {error}"
+            f"{type(error).__name__}: {error}",
+            reply_markup=get_main_keyboard()
         )
 
 
@@ -219,7 +263,8 @@ async def history_command(
         if not rows:
 
             await update.message.reply_text(
-                "📭 هنوز هیچ قیمتی در دیتابیس ذخیره نشده است."
+                "📭 هنوز هیچ قیمتی در دیتابیس ذخیره نشده است.",
+                reply_markup=get_main_keyboard()
             )
 
             return
@@ -242,7 +287,8 @@ async def history_command(
             )
 
         await update.message.reply_text(
-            message
+            message,
+            reply_markup=get_main_keyboard()
         )
 
     except Exception as error:
@@ -254,7 +300,60 @@ async def history_command(
 
         await update.message.reply_text(
             "❌ خطا در خواندن تاریخچه:\n\n"
-            f"{type(error).__name__}: {error}"
+            f"{type(error).__name__}: {error}",
+            reply_markup=get_main_keyboard()
+        )
+
+
+# ==========================================
+# Button Menu Handler
+# ==========================================
+
+async def menu_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = update.message.text
+
+    print(
+        f"🔘 BUTTON PRESSED: {text}"
+    )
+
+    if text == "🟡 قیمت لحظه‌ای":
+
+        await price_command(
+            update,
+            context
+        )
+
+    elif text == "📊 تاریخچه":
+
+        await history_command(
+            update,
+            context
+        )
+
+    elif text == "🔄 بروزرسانی":
+
+        await price_command(
+            update,
+            context
+        )
+
+    elif text == "ℹ️ راهنما":
+
+        await help_command(
+            update,
+            context
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "🤔 این گزینه را متوجه نشدم.\n"
+            "لطفاً از دکمه‌های منو استفاده کن.",
+            reply_markup=get_main_keyboard()
         )
 
 
@@ -338,6 +437,17 @@ def main():
         CommandHandler(
             "history",
             history_command
+        )
+    )
+
+    # ======================================
+    # Button Handler
+    # ======================================
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            menu_handler
         )
     )
 
