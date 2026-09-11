@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 
 from dotenv import load_dotenv
 
@@ -25,6 +26,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
+# فاصله جمع‌آوری خودکار قیمت
+# بر حسب ثانیه
+COLLECT_INTERVAL = 300
+
 
 # ==========================================
 # Render Health Server
@@ -34,7 +39,10 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header(
+            "Content-Type",
+            "text/plain"
+        )
         self.end_headers()
 
         self.wfile.write(
@@ -57,6 +65,42 @@ def run_health_server():
     )
 
     server.serve_forever()
+
+
+# ==========================================
+# Automatic Price Collector
+# ==========================================
+
+def automatic_price_collector():
+
+    print(
+        "📡 Automatic price collector started."
+    )
+
+    while True:
+
+        try:
+
+            # دریافت قیمت از TGJU
+            data = get_gold_18k()
+
+            # ذخیره در دیتابیس
+            save_price(data)
+
+            print(
+                "🤖 Automatic collection successful: "
+                f"{data['price']:,} {data['currency']}"
+            )
+
+        except Exception as error:
+
+            print(
+                "❌ Automatic collection error: "
+                f"{type(error).__name__}: {error}"
+            )
+
+        # صبر تا جمع‌آوری بعدی
+        time.sleep(COLLECT_INTERVAL)
 
 
 # ==========================================
@@ -104,10 +148,10 @@ async def price_command(
 
     try:
 
-        # دریافت قیمت از TGJU
+        # دریافت قیمت
         data = get_gold_18k()
 
-        # ذخیره قیمت در دیتابیس
+        # ذخیره قیمت
         save_price(data)
 
         price = data["price"]
@@ -141,7 +185,7 @@ async def history_command(
 
     try:
 
-        # دریافت آخرین ۱۰ رکورد
+        # آخرین ۱۰ رکورد
         rows = get_latest_prices(10)
 
         if not rows:
@@ -198,10 +242,13 @@ def main():
             "BOT_TOKEN is not configured."
         )
 
-    # ساخت دیتابیس و جدول
+    # ساخت دیتابیس
     init_db()
 
-    # اجرای Health Server برای Render
+    # ======================================
+    # Render Health Server
+    # ======================================
+
     health_thread = threading.Thread(
         target=run_health_server,
         daemon=True
@@ -209,7 +256,21 @@ def main():
 
     health_thread.start()
 
-    # ساخت Telegram Application
+    # ======================================
+    # Automatic Collector
+    # ======================================
+
+    collector_thread = threading.Thread(
+        target=automatic_price_collector,
+        daemon=True
+    )
+
+    collector_thread.start()
+
+    # ======================================
+    # Telegram Application
+    # ======================================
+
     application = (
         Application
         .builder()
@@ -253,7 +314,7 @@ def main():
         "🤖 Iran Gold AI Bot is running..."
     )
 
-    # اجرای Telegram Bot
+    # اجرای ربات
     application.run_polling()
 
 
