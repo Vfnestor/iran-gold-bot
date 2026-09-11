@@ -13,9 +13,14 @@ DB_PATH = os.path.join(DB_DIR, "gold.db")
 
 def get_connection():
 
-    os.makedirs(DB_DIR, exist_ok=True)
+    os.makedirs(
+        DB_DIR,
+        exist_ok=True
+    )
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(
+        DB_PATH
+    )
 
     return conn
 
@@ -163,7 +168,9 @@ def save_price(data):
 # Get Latest Prices
 # ==========================================
 
-def get_latest_prices(limit=10):
+def get_latest_prices(
+    limit=10
+):
 
     conn = get_connection()
 
@@ -176,7 +183,9 @@ def get_latest_prices(limit=10):
             source,
             timestamp
         FROM gold_prices
+
         ORDER BY id DESC
+
         LIMIT ?
     """, (
         limit,
@@ -295,3 +304,128 @@ def get_candles(
     conn.close()
 
     return rows
+
+
+# ==========================================
+# Get Latest Candle
+# ==========================================
+
+def get_latest_candle(
+    symbol="gold_18k",
+    timeframe="1m"
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume
+        FROM gold_candles
+
+        WHERE symbol = ?
+        AND timeframe = ?
+
+        ORDER BY timestamp DESC
+
+        LIMIT 1
+    """, (
+        symbol,
+        timeframe
+    ))
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+# ==========================================
+# Database Statistics
+# ==========================================
+
+def get_database_stats():
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    # ------------------------------
+    # Raw price count
+    # ------------------------------
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM gold_prices
+    """)
+
+    raw_price_count = cursor.fetchone()[0]
+
+    # ------------------------------
+    # Candle count
+    # ------------------------------
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM gold_candles
+    """)
+
+    candle_count = cursor.fetchone()[0]
+
+    # ------------------------------
+    # Latest raw price
+    # ------------------------------
+
+    cursor.execute("""
+        SELECT
+            price,
+            currency,
+            source,
+            timestamp
+        FROM gold_prices
+
+        ORDER BY id DESC
+
+        LIMIT 1
+    """)
+
+    latest_price = cursor.fetchone()
+
+    # ------------------------------
+    # Latest candle
+    # ------------------------------
+
+    cursor.execute("""
+        SELECT
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume
+        FROM gold_candles
+
+        WHERE timeframe = '1m'
+
+        ORDER BY timestamp DESC
+
+        LIMIT 1
+    """)
+
+    latest_candle = cursor.fetchone()
+
+    conn.close()
+
+    return {
+        "raw_price_count": raw_price_count,
+        "candle_count": candle_count,
+        "latest_price": latest_price,
+        "latest_candle": latest_candle,
+    }
