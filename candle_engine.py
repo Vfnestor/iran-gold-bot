@@ -1,4 +1,8 @@
-from datetime import datetime, timezone, timedelta
+from datetime import (
+    datetime,
+    timezone,
+    timedelta,
+)
 
 from database import (
     get_connection,
@@ -6,18 +10,13 @@ from database import (
 )
 
 
-# ==========================================
-# Settings
-# ==========================================
-
 TIMEFRAME = "1m"
 
-# تعداد رکوردهای خام برای بررسی
 RAW_PRICE_LIMIT = 200
 
 
 # ==========================================
-# Parse Timestamp
+# Timestamp Parser
 # ==========================================
 
 def parse_timestamp(timestamp):
@@ -38,7 +37,7 @@ def parse_timestamp(timestamp):
 
 
 # ==========================================
-# Get Minute Start
+# Minute Start
 # ==========================================
 
 def get_minute_start(timestamp):
@@ -54,7 +53,7 @@ def get_minute_start(timestamp):
 
 
 # ==========================================
-# Get Raw Prices
+# Get Recent Raw Prices
 # ==========================================
 
 def get_recent_prices(
@@ -66,35 +65,31 @@ def get_recent_prices(
 
     cursor = conn.cursor()
 
-    try:
+    cursor.execute("""
+        SELECT
+            price,
+            timestamp
+        FROM gold_prices
 
-        cursor.execute("""
-            SELECT
-                price,
-                timestamp
-            FROM gold_prices
+        WHERE symbol = ?
 
-            WHERE symbol = ?
+        ORDER BY id DESC
 
-            ORDER BY id DESC
+        LIMIT ?
+    """, (
+        symbol,
+        limit
+    ))
 
-            LIMIT ?
-        """, (
-            symbol,
-            limit
-        ))
+    rows = cursor.fetchall()
 
-        rows = cursor.fetchall()
-
-    finally:
-
-        conn.close()
+    conn.close()
 
     return rows
 
 
 # ==========================================
-# Build Candle From Prices
+# Build Candle
 # ==========================================
 
 def build_candle_from_prices(
@@ -128,14 +123,16 @@ def build_candle_from_prices(
         ):
 
             minute_prices.append(
-                (price, dt)
+                (
+                    price,
+                    dt
+                )
             )
 
     if not minute_prices:
 
         return None
 
-    # مرتب‌سازی بر اساس زمان
     minute_prices.sort(
         key=lambda item: item[1]
     )
@@ -147,41 +144,74 @@ def build_candle_from_prices(
 
     open_price = values[0]
 
-    high_price = max(values)
+    high_price = max(
+        values
+    )
 
-    low_price = min(values)
+    low_price = min(
+        values
+    )
 
     close_price = values[-1]
 
-    # تعداد نمونه‌های دریافتی
-    volume = len(values)
+    volume = len(
+        values
+    )
 
     return {
+
         "symbol": symbol,
+
         "timeframe": TIMEFRAME,
-        "timestamp": minute_start.isoformat(),
-        "open": open_price,
-        "high": high_price,
-        "low": low_price,
-        "close": close_price,
-        "volume": volume,
+
+        "timestamp":
+            minute_start.isoformat(),
+
+        "open":
+            open_price,
+
+        "high":
+            high_price,
+
+        "low":
+            low_price,
+
+        "close":
+            close_price,
+
+        "volume":
+            volume,
     }
 
 
 # ==========================================
-# Save Candle Helper
+# Save Candle Data
 # ==========================================
 
-def save_candle_data(candle):
+def save_candle_data(
+    candle
+):
+
+    if not candle:
+
+        return
 
     save_candle(
+
         symbol=candle["symbol"],
+
         timeframe=candle["timeframe"],
+
         timestamp=candle["timestamp"],
+
         open_price=candle["open"],
+
         high_price=candle["high"],
+
         low_price=candle["low"],
+
         close_price=candle["close"],
+
         volume=candle["volume"]
     )
 
@@ -192,11 +222,15 @@ def save_candle_data(candle):
 
 def print_candle(
     candle,
-    title
+    title="🕯️ CANDLE"
 ):
 
+    if not candle:
+
+        return
+
     print(
-        title
+        f"{title}:"
     )
 
     print(
@@ -231,7 +265,7 @@ def print_candle(
 
 
 # ==========================================
-# Build 1 Minute Candle
+# Build 1M Candle
 # ==========================================
 
 def build_1m_candle(
@@ -239,21 +273,21 @@ def build_1m_candle(
 ):
 
     prices = get_recent_prices(
-        symbol=symbol,
-        limit=RAW_PRICE_LIMIT
+        symbol=symbol
     )
 
     if not prices:
 
         print(
-            "⚠️ CANDLE: No raw price data."
+            "⚠️ CANDLE: "
+            "No raw price data."
         )
 
         return None
 
-    # --------------------------------------
-    # پیدا کردن آخرین timestamp معتبر
-    # --------------------------------------
+    # ------------------------------
+    # Find latest valid timestamp
+    # ------------------------------
 
     latest_timestamp = None
 
@@ -276,55 +310,58 @@ def build_1m_candle(
     if not latest_timestamp:
 
         print(
-            "⚠️ CANDLE: No valid timestamps."
+            "⚠️ CANDLE: "
+            "No valid timestamps."
         )
 
         return None
-
-    # --------------------------------------
-    # دقیقه جاری
-    # --------------------------------------
 
     latest_minute = get_minute_start(
         latest_timestamp
     )
 
+    # ------------------------------
+    # Current candle
+    # ------------------------------
+
     current_candle = build_candle_from_prices(
-        prices=prices,
-        minute_start=latest_minute,
+
+        prices,
+
+        latest_minute,
+
         symbol=symbol
     )
 
-    if not current_candle:
+    if current_candle:
 
-        print(
-            "⚠️ CANDLE: Could not build "
-            "current 1M candle."
+        save_candle_data(
+            current_candle
         )
 
-        return None
+        print_candle(
+            current_candle,
+            "🕯️ CANDLE: Current 1M"
+        )
 
-    # --------------------------------------
-    # ذخیره / بروزرسانی کندل جاری
-    # --------------------------------------
-
-    save_candle_data(
-        current_candle
-    )
-
-    # --------------------------------------
-    # کندل دقیقه قبل
-    # --------------------------------------
+    # ------------------------------
+    # Previous candle
+    # ------------------------------
 
     previous_minute = (
         latest_minute
         - timedelta(minutes=1)
     )
 
-    previous_candle = build_candle_from_prices(
-        prices=prices,
-        minute_start=previous_minute,
-        symbol=symbol
+    previous_candle = (
+        build_candle_from_prices(
+
+            prices,
+
+            previous_minute,
+
+            symbol=symbol
+        )
     )
 
     if previous_candle:
@@ -335,23 +372,12 @@ def build_1m_candle(
 
         print_candle(
             previous_candle,
-            "🔒 CANDLE: Previous 1M candle saved."
+            "🔒 CANDLE: Previous 1M"
         )
 
-    else:
-
-        print(
-            "ℹ️ CANDLE: Previous 1M candle "
-            "not available yet."
-        )
-
-    # --------------------------------------
-    # نمایش کندل جاری
-    # --------------------------------------
-
-    print_candle(
-        current_candle,
-        "🕯️ CANDLE: Current 1M candle updated."
+    print(
+        "🕯️ CANDLE: "
+        "Current 1M candle updated."
     )
 
     return current_candle
