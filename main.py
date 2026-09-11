@@ -26,9 +26,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-# فاصله جمع‌آوری خودکار قیمت
-# بر حسب ثانیه
-COLLECT_INTERVAL = 300
+# ==========================================
+# TEST MODE
+# فعلاً هر 60 ثانیه یک بار قیمت می‌گیریم
+# بعد از اطمینان، دوباره به 300 ثانیه برمی‌گردانیم.
+# ==========================================
+
+COLLECT_INTERVAL = 60
 
 
 # ==========================================
@@ -39,10 +43,12 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
+
         self.send_header(
             "Content-Type",
             "text/plain"
         )
+
         self.end_headers()
 
         self.wfile.write(
@@ -74,32 +80,48 @@ def run_health_server():
 def automatic_price_collector():
 
     print(
-        "📡 Automatic price collector started."
+        "🤖 AUTO COLLECTOR STARTED"
+    )
+
+    print(
+        f"⏱️ Collection interval: "
+        f"{COLLECT_INTERVAL} seconds"
     )
 
     while True:
 
         try:
 
-            # دریافت قیمت از TGJU
+            print(
+                "📡 AUTO: Requesting price from TGJU..."
+            )
+
             data = get_gold_18k()
 
-            # ذخیره در دیتابیس
+            print(
+                "📥 AUTO: Price received: "
+                f"{data['price']:,} "
+                f"{data['currency']}"
+            )
+
             save_price(data)
 
             print(
-                "🤖 Automatic collection successful: "
-                f"{data['price']:,} {data['currency']}"
+                "💾 AUTO: Price saved successfully."
             )
 
         except Exception as error:
 
             print(
-                "❌ Automatic collection error: "
+                "❌ AUTO COLLECTOR ERROR: "
                 f"{type(error).__name__}: {error}"
             )
 
-        # صبر تا جمع‌آوری بعدی
+        print(
+            f"⏳ AUTO: Waiting "
+            f"{COLLECT_INTERVAL} seconds..."
+        )
+
         time.sleep(COLLECT_INTERVAL)
 
 
@@ -148,11 +170,17 @@ async def price_command(
 
     try:
 
-        # دریافت قیمت
+        print(
+            "👤 MANUAL: /price requested"
+        )
+
         data = get_gold_18k()
 
-        # ذخیره قیمت
         save_price(data)
+
+        print(
+            "💾 MANUAL: Price saved successfully."
+        )
 
         price = data["price"]
 
@@ -165,7 +193,8 @@ async def price_command(
     except Exception as error:
 
         print(
-            f"TGJU error: {error}"
+            f"❌ MANUAL PRICE ERROR: "
+            f"{type(error).__name__}: {error}"
         )
 
         await update.message.reply_text(
@@ -185,7 +214,6 @@ async def history_command(
 
     try:
 
-        # آخرین ۱۰ رکورد
         rows = get_latest_prices(10)
 
         if not rows:
@@ -220,7 +248,8 @@ async def history_command(
     except Exception as error:
 
         print(
-            f"History error: {error}"
+            f"❌ HISTORY ERROR: "
+            f"{type(error).__name__}: {error}"
         )
 
         await update.message.reply_text(
@@ -235,14 +264,16 @@ async def history_command(
 
 def main():
 
-    # بررسی Token
     if not BOT_TOKEN:
 
         raise RuntimeError(
             "BOT_TOKEN is not configured."
         )
 
-    # ساخت دیتابیس
+    # ======================================
+    # Database
+    # ======================================
+
     init_db()
 
     # ======================================
@@ -314,7 +345,6 @@ def main():
         "🤖 Iran Gold AI Bot is running..."
     )
 
-    # اجرای ربات
     application.run_polling()
 
 
