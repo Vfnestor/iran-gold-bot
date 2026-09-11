@@ -1,5 +1,6 @@
 import os
 import threading
+import traceback
 
 from dotenv import load_dotenv
 
@@ -20,7 +21,6 @@ from telegram.ext import (
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from data.collector_service import run_collector
-
 from data.collectors.tgju import get_gold_18k
 
 from database import (
@@ -33,324 +33,12 @@ from candle_engine import build_1m_candle
 
 
 # ============================================================
-# LOAD ENVIRONMENT
+# ENV
 # ============================================================
 
 load_dotenv()
 
-print(
-    "DEBUG 1: main.py started",
-    flush=True
-)
-
-
-# ============================================================
-# ENV VARIABLES
-# ============================================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-
-# ============================================================
-# HEALTH CHECK SERVER
-# ============================================================
-
-class HealthHandler(BaseHTTPRequestHandler):
-
-    def do_GET(self):
-
-        self.send_response(200)
-
-        self.send_header(
-            "Content-type",
-            "text/plain; charset=utf-8"
-        )
-
-        self.end_headers()
-
-        self.wfile.write(
-            b"Iran Gold AI is running."
-        )
-
-    def log_message(self, format, *args):
-        return
-
-
-def start_health_server():
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            10000
-        )
-    )
-
-    server = HTTPServer(
-        ("0.0.0.0", port),
-        HealthHandler
-    )
-
-    print(
-        f"🌐 Health server running on port {port}",
-        flush=True
-    )
-
-    server.serve_forever()
-
-
-# ============================================================
-# TELEGRAM KEYBOARD
-# ============================================================
-
-def main_keyboard():
-
-    keyboard = [
-
-        [
-            KeyboardButton("🟡 قیمت لحظه‌ای"),
-            KeyboardButton("📊 وضعیت بازار"),
-        ],
-
-        [
-            KeyboardButton("📈 کندل 1 دقیقه"),
-            KeyboardButton("📉 تحلیل"),
-        ],
-
-    ]
-
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True
-    )
-
-
-# ============================================================
-# START COMMAND
-# ============================================================
-
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-
-        "🤖 Iran Gold AI\n\n"
-        "به ربات تحلیل هوشمند بازار طلا خوش آمدید.\n\n"
-        "یک گزینه را انتخاب کنید:",
-
-        reply_markup=main_keyboard()
-    )
-
-
-# ============================================================
-# PRICE COMMAND
-# ============================================================
-
-async def price_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    try:
-
-        data = get_gold_18k()
-
-        save_price(data)
-
-        price = data["price"]
-
-        source = data.get(
-            "source",
-            "TGJU"
-        )
-
-        message = (
-
-            "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
-
-            f"💰 قیمت: {price:,.0f} تومان\n"
-
-            f"📡 منبع: {source}\n"
-
-        )
-
-        await update.message.reply_text(
-            message
-        )
-
-    except Exception as error:
-
-        print(
-            f"❌ PRICE COMMAND ERROR: {error}",
-            flush=True
-        )
-
-        await update.message.reply_text(
-
-            "❌ دریافت قیمت با خطا مواجه شد.\n"
-            "لطفاً چند لحظه بعد دوباره تلاش کنید."
-
-        )
-
-
-# ============================================================
-# MARKET STATUS
-# ============================================================
-
-async def market_status_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    try:
-
-        prices = get_latest_prices()
-
-        if not prices:
-
-            await update.message.reply_text(
-                "⚠️ هنوز داده‌ای در دیتابیس ثبت نشده است."
-            )
-
-            return
-
-        message = "📊 وضعیت بازار\n\n"
-
-        for item in prices:
-
-            message += (
-                f"📡 {item}\n"
-            )
-
-        await update.message.reply_text(
-            message
-        )
-
-    except Exception as error:
-
-        print(
-            f"❌ MARKET STATUS ERROR: {error}",
-            flush=True
-        )
-
-        await update.message.reply_text(
-            "❌ دریافت وضعیت بازار ناموفق بود."
-        )
-
-
-# ============================================================
-# CANDLE COMMAND
-# ============================================================
-
-async def candle_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    try:
-
-        candle = build_1m_candle()
-
-        if not candle:
-
-            await update.message.reply_text(
-                "⚠️ هنوز اطلاعات کافی برای ساخت کندل وجود ندارد."
-            )
-
-            return
-
-        message = (
-
-            "📈 کندل ۱ دقیقه‌ای\n\n"
-
-            f"🟢 Open: {candle['open']:,.0f}\n"
-            f"🔵 High: {candle['high']:,.0f}\n"
-            f"🔴 Low: {candle['low']:,.0f}\n"
-            f"⚪ Close: {candle['close']:,.0f}\n"
-
-        )
-
-        await update.message.reply_text(
-            message
-        )
-
-    except Exception as error:
-
-        print(
-            f"❌ CANDLE ERROR: {error}",
-            flush=True
-        )
-
-        await update.message.reply_text(
-            "❌ ساخت کندل با خطا مواجه شد."
-        )
-
-
-# ============================================================
-# ANALYSIS COMMAND
-# ============================================================
-
-async def analysis_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-
-        "🧠 موتور تحلیل Iran Gold AI\n\n"
-        "⏳ بخش تحلیل در حال توسعه است."
-
-    )
-
-
-# ============================================================
-# TEXT HANDLER
-# ============================================================
-
-async def text_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    text = update.message.text
-
-    if text == "🟡 قیمت لحظه‌ای":
-
-        await price_command(
-            update,
-            context
-        )
-
-    elif text == "📊 وضعیت بازار":
-
-        await market_status_command(
-            update,
-            context
-        )
-
-    elif text == "📈 کندل 1 دقیقه":
-
-        await candle_command(
-            update,
-            context
-        )
-
-    elif text == "📉 تحلیل":
-
-        await analysis_command(
-            update,
-            context
-        )
-
-    else:
-
-        await update.message.reply_text(
-
-            "❓ دستور موردنظر را انتخاب کنید.",
-
-            reply_markup=main_keyboard()
-        )
+print("DEBUG 1: main.py started", flush=True)
 
 
 # ============================================================
@@ -359,10 +47,7 @@ async def text_handler(
 
 def test_servix():
 
-    print(
-        "🧪 SERVIX: starting test...",
-        flush=True
-    )
+    print("🧪 SERVIX: starting test...", flush=True)
 
     try:
 
@@ -410,6 +95,8 @@ def test_servix():
             flush=True
         )
 
+        return True
+
     except Exception as error:
 
         print(
@@ -427,6 +114,347 @@ def test_servix():
             flush=True
         )
 
+        traceback.print_exc()
+
+        return False
+
+
+# ============================================================
+# HEALTH CHECK SERVER
+# ============================================================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+
+        self.send_response(200)
+
+        self.send_header(
+            "Content-type",
+            "text/plain"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(
+            b"Iran Gold AI is running."
+        )
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+
+    try:
+
+        port = int(
+            os.getenv(
+                "PORT",
+                "10000"
+            )
+        )
+
+        server = HTTPServer(
+            ("0.0.0.0", port),
+            HealthHandler
+        )
+
+        print(
+            f"🌐 Health server running on port {port}",
+            flush=True
+        )
+
+        server.serve_forever()
+
+    except Exception as error:
+
+        print(
+            "❌ Health server failed:",
+            error,
+            flush=True
+        )
+
+
+# ============================================================
+# TELEGRAM COMMANDS
+# ============================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    keyboard = [
+        [
+            KeyboardButton("🟡 قیمت لحظه‌ای"),
+            KeyboardButton("📊 تاریخچه"),
+        ],
+        [
+            KeyboardButton("📈 کندل‌ها"),
+            KeyboardButton("ℹ️ درباره"),
+        ],
+    ]
+
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
+    )
+
+    await update.message.reply_text(
+        "🤖 به Iran Gold AI خوش آمدید.\n\n"
+        "یک گزینه را انتخاب کنید:",
+        reply_markup=reply_markup
+    )
+
+
+# ============================================================
+# PRICE COMMAND
+# ============================================================
+
+async def price_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        data = get_gold_18k()
+
+        save_price(data)
+
+        price = data["price"]
+
+        source = data.get(
+            "source",
+            "unknown"
+        )
+
+        message = (
+            "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
+            f"💰 قیمت: {price:,} تومان\n"
+            f"📡 منبع: {source}"
+        )
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ PRICE COMMAND ERROR:",
+            error,
+            flush=True
+        )
+
+        await update.message.reply_text(
+            "❌ خطا در دریافت قیمت."
+        )
+
+
+# ============================================================
+# HISTORY COMMAND
+# ============================================================
+
+async def history_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        prices = get_latest_prices(10)
+
+        if not prices:
+
+            await update.message.reply_text(
+                "📊 هنوز داده‌ای در دیتابیس وجود ندارد."
+            )
+
+            return
+
+        lines = [
+            "📊 آخرین قیمت‌های ثبت‌شده:",
+            ""
+        ]
+
+        for item in prices:
+
+            try:
+
+                price = item["price"]
+
+                timestamp = item.get(
+                    "timestamp",
+                    ""
+                )
+
+                lines.append(
+                    f"💰 {price:,} | {timestamp}"
+                )
+
+            except Exception:
+
+                lines.append(
+                    str(item)
+                )
+
+        await update.message.reply_text(
+            "\n".join(lines)
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ HISTORY ERROR:",
+            error,
+            flush=True
+        )
+
+        await update.message.reply_text(
+            "❌ خطا در دریافت تاریخچه."
+        )
+
+
+# ============================================================
+# CANDLE COMMAND
+# ============================================================
+
+async def candle_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    try:
+
+        candles = build_1m_candle()
+
+        if not candles:
+
+            await update.message.reply_text(
+                "🕯️ هنوز کندلی ساخته نشده است."
+            )
+
+            return
+
+        await update.message.reply_text(
+            f"🕯️ تعداد کندل‌های ۱ دقیقه‌ای: "
+            f"{len(candles)}"
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ CANDLE COMMAND ERROR:",
+            error,
+            flush=True
+        )
+
+        await update.message.reply_text(
+            "❌ خطا در دریافت کندل‌ها."
+        )
+
+
+# ============================================================
+# ABOUT COMMAND
+# ============================================================
+
+async def about_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🤖 Iran Gold AI\n\n"
+        "سیستم هوشمند جمع‌آوری و تحلیل "
+        "قیمت طلای ایران.\n\n"
+        "📡 منابع داده در حال توسعه هستند.\n"
+        "🕯️ موتور کندل فعال است.\n"
+        "🗄️ دیتابیس فعال است."
+    )
+
+
+# ============================================================
+# TEXT HANDLER
+# ============================================================
+
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = update.message.text
+
+    if text == "🟡 قیمت لحظه‌ای":
+
+        await price_command(
+            update,
+            context
+        )
+
+    elif text == "📊 تاریخچه":
+
+        await history_command(
+            update,
+            context
+        )
+
+    elif text == "📈 کندل‌ها":
+
+        await candle_command(
+            update,
+            context
+        )
+
+    elif text == "ℹ️ درباره":
+
+        await about_command(
+            update,
+            context
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "❓ دستور موردنظر را از منوی پایین انتخاب کنید."
+        )
+
+
+# ============================================================
+# COLLECTOR THREAD
+# ============================================================
+
+def start_collector():
+
+    print(
+        "🚀 COLLECTOR THREAD: starting...",
+        flush=True
+    )
+
+    try:
+
+        run_collector()
+
+    except Exception as error:
+
+        print(
+            "❌ COLLECTOR THREAD FAILED",
+            flush=True
+        )
+
+        print(
+            f"Type: {type(error).__name__}",
+            flush=True
+        )
+
+        print(
+            f"Message: {error}",
+            flush=True
+        )
+
+        traceback.print_exc()
+
 
 # ============================================================
 # MAIN
@@ -440,13 +468,17 @@ def main():
     )
 
     # --------------------------------------------------------
-    # CHECK BOT TOKEN
+    # BOT TOKEN
     # --------------------------------------------------------
 
-    if not BOT_TOKEN:
+    bot_token = os.getenv(
+        "BOT_TOKEN"
+    )
+
+    if not bot_token:
 
         print(
-            "❌ BOT_TOKEN environment variable is missing.",
+            "❌ BOT_TOKEN not found.",
             flush=True
         )
 
@@ -473,19 +505,12 @@ def main():
     except Exception as error:
 
         print(
-            "❌ DATABASE INITIALIZATION FAILED",
+            "❌ Database initialization failed:",
+            error,
             flush=True
         )
 
-        print(
-            f"Type: {type(error).__name__}",
-            flush=True
-        )
-
-        print(
-            f"Message: {error}",
-            flush=True
-        )
+        traceback.print_exc()
 
         return
 
@@ -493,77 +518,32 @@ def main():
     # SERVIX TEST
     # --------------------------------------------------------
 
-    test_servix()
+    servix_ok = test_servix()
+
+    if servix_ok:
+
+        print(
+            "🟢 SERVIX STATUS: ONLINE",
+            flush=True
+        )
+
+    else:
+
+        print(
+            "🔴 SERVIX STATUS: OFFLINE",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # HEALTH SERVER
     # --------------------------------------------------------
 
-    try:
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
 
-        health_thread = threading.Thread(
-            target=start_health_server,
-            daemon=True
-        )
-
-        health_thread.start()
-
-        print(
-            "🌐 Health server thread started.",
-            flush=True
-        )
-
-    except Exception as error:
-
-        print(
-            "❌ HEALTH SERVER FAILED",
-            flush=True
-        )
-
-        print(
-            f"Type: {type(error).__name__}",
-            flush=True
-        )
-
-        print(
-            f"Message: {error}",
-            flush=True
-        )
-
-    # --------------------------------------------------------
-    # COLLECTOR
-    # --------------------------------------------------------
-
-    try:
-
-        collector_thread = threading.Thread(
-            target=run_collector,
-            daemon=True
-        )
-
-        collector_thread.start()
-
-        print(
-            "📡 Collector started.",
-            flush=True
-        )
-
-    except Exception as error:
-
-        print(
-            "❌ COLLECTOR START FAILED",
-            flush=True
-        )
-
-        print(
-            f"Type: {type(error).__name__}",
-            flush=True
-        )
-
-        print(
-            f"Message: {error}",
-            flush=True
-        )
+    health_thread.start()
 
     # --------------------------------------------------------
     # TELEGRAM APPLICATION
@@ -572,75 +552,78 @@ def main():
     try:
 
         application = (
-            Application.builder()
-            .token(BOT_TOKEN)
+            Application
+            .builder()
+            .token(bot_token)
             .build()
         )
 
+        application.add_handler(
+            CommandHandler(
+                "start",
+                start_command
+            )
+        )
+
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                text_handler
+            )
+        )
+
         print(
-            "🤖 Telegram application created.",
+            "✅ Telegram application initialized.",
             flush=True
         )
 
     except Exception as error:
 
         print(
-            "❌ TELEGRAM APPLICATION FAILED",
+            "❌ Telegram application initialization failed:",
+            error,
             flush=True
         )
 
-        print(
-            f"Type: {type(error).__name__}",
-            flush=True
-        )
-
-        print(
-            f"Message: {error}",
-            flush=True
-        )
+        traceback.print_exc()
 
         return
 
     # --------------------------------------------------------
-    # HANDLERS
+    # COLLECTOR
     # --------------------------------------------------------
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start_command
-        )
+    collector_thread = threading.Thread(
+        target=start_collector,
+        daemon=True
     )
 
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            text_handler
-        )
-    )
+    collector_thread.start()
 
     print(
-        "✅ Telegram handlers registered.",
+        "🟢 Collector thread started.",
         flush=True
     )
 
     # --------------------------------------------------------
-    # START BOT
+    # TELEGRAM POLLING
     # --------------------------------------------------------
 
     print(
-        "🤖 Telegram bot starting...",
+        "📡 Starting Telegram polling...",
         flush=True
     )
 
     try:
 
-        application.run_polling()
+        application.run_polling(
+            drop_pending_updates=True
+        )
 
     except Exception as error:
 
         print(
-            "❌ TELEGRAM POLLING FAILED",
+            "❌ Telegram polling failed.",
             flush=True
         )
 
@@ -653,6 +636,8 @@ def main():
             f"Message: {error}",
             flush=True
         )
+
+        traceback.print_exc()
 
 
 # ============================================================
