@@ -11,6 +11,8 @@ from telegram.ext import (
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from data.collectors.tgju import get_gold_18k
+
 
 load_dotenv()
 
@@ -47,15 +49,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 دستورات فعلی:\n\n"
         "/start - شروع ربات\n"
-        "/help - راهنما"
+        "/help - راهنما\n"
+        "/price - قیمت طلای ۱۸ عیار"
     )
+
+
+async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        data = get_gold_18k()
+
+        price = data["price"]
+
+        await update.message.reply_text(
+            "🟡 طلای ۱۸ عیار\n\n"
+            f"💰 قیمت: {price:,} ریال\n"
+            f"📡 منبع: {data['source']}"
+        )
+
+    except Exception as error:
+        print(f"TGJU error: {error}")
+
+        await update.message.reply_text(
+            "❌ در دریافت قیمت طلا مشکلی پیش آمد.\n"
+            "لطفاً دوباره تلاش کن."
+        )
 
 
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not configured.")
 
-    # Start a tiny HTTP server so Render detects an open port.
     health_thread = threading.Thread(
         target=run_health_server,
         daemon=True,
@@ -70,6 +93,10 @@ def main():
 
     application.add_handler(
         CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("price", price_command)
     )
 
     print("🤖 Iran Gold AI Bot is running...")
