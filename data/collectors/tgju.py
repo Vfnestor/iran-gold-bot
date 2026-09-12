@@ -1,5 +1,6 @@
 import re
 from datetime import datetime, timezone
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,6 +14,9 @@ TGJU_URL = "https://www.tgju.org/profile/geram18"
 
 REQUEST_TIMEOUT = 15
 
+MAX_SCRIPT_FILES = 10
+
+MAX_CONTEXT_PER_MATCH = 1200
 
 HEADERS = {
     "User-Agent": (
@@ -81,10 +85,107 @@ def extract_current_price(html):
 
 
 # ============================================================
-# TGJU DATA / CHART DISCOVERY
+# HELPERS
 # ============================================================
 
-def inspect_tgju_data(html):
+def clean_text(text):
+    """
+    حذف فاصله‌ها و نویزهای اضافی برای لاگ.
+    """
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def get_context(
+    text,
+    position,
+    radius=MAX_CONTEXT_PER_MATCH,
+):
+    """
+    بخشی از متن اطراف یک match را برمی‌گرداند.
+    """
+
+    start = max(
+        0,
+        position - radius,
+    )
+
+    end = min(
+        len(text),
+        position + radius,
+    )
+
+    return clean_text(
+        text[start:end]
+    )
+
+
+# ============================================================
+# FIND SCRIPT FILES
+# ============================================================
+
+def find_script_urls(html):
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    script_urls = []
+
+    for script in soup.find_all(
+        "script"
+    ):
+
+        src = script.get(
+            "src"
+        )
+
+        if not src:
+            continue
+
+        url = urljoin(
+            TGJU_URL,
+            src,
+        )
+
+        parsed = urlparse(
+            url
+        )
+
+        # فقط فایل‌های JS مربوط به خود TGJU
+        if parsed.netloc not in (
+            "www.tgju.org",
+            "tgju.org",
+        ):
+            continue
+
+        if url not in script_urls:
+
+            script_urls.append(
+                url
+            )
+
+    return script_urls[:MAX_SCRIPT_FILES]
+
+
+# ============================================================
+# SEARCH JAVASCRIPT
+# ============================================================
+
+def inspect_javascript(
+    js_text,
+    source_name,
+):
+    """
+    جستجوی هدفمند برای پیدا کردن منبع داده نمودار.
+    """
 
     print(
         "",
@@ -92,147 +193,455 @@ def inspect_tgju_data(html):
     )
 
     print(
-        "🔎 TGJU HISTORICAL / CHART TEST",
+        f"🧩 JS SCAN: {source_name}",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # الگوهای مهم
+    # --------------------------------------------------------
+
+    patterns = [
+        (
+            "AJAX",
+            r"\$\.ajax\s*\(",
+        ),
+        (
+            "GET",
+            r"\$\.get\s*\(",
+        ),
+        (
+            "POST",
+            r"\$\.post\s*\(",
+        ),
+        (
+            "FETCH",
+            r"\bfetch\s*\(",
+        ),
+        (
+            "XHR",
+            r"XMLHttpRequest",
+        ),
+        (
+            "SERIES",
+            r"\bseries\s*[:=]",
+        ),
+        (
+            "CHART",
+            r"profile_charts|technical_charts|chart",
+        ),
+        (
+            "HISTORY",
+            r"profile_history|historical|history",
+        ),
+        (
+            "OHLC",
+            r"\bohlc\b|open\s*[:=].*high\s*[:=].*low\s*[:=].*close",
+        ),
+        (
+            "API",
+            r"[/\"']api[/\"']|/api/|api/",
+        ),
+    ]
+
+    found_any = False
+
+    for label, pattern in patterns:
+
+        match = re.search(
+            pattern,
+            js_text,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            continue
+
+        found_any = True
+
+        context = get_context(
+            js_text,
+            match.start(),
+        )
+
+        print(
+            f"   🔎 {label}:",
+            flush=True,
+        )
+
+        print(
+            f"      {context[:MAX_CONTEXT_PER_MATCH]}",
+            flush=True,
+        )
+
+    if not found_any:
+
+        print(
+            "   — no relevant chart/API pattern",
+            flush=True,
+        )
+
+
+# ============================================================
+# EXTRACT POSSIBLE ENDPOINTS
+# ============================================================
+
+def find_candidate_endpoints(
+    text
+):
+    """
+    URLهای احتمالی مربوط به API / chart / history
+    """
+
+    candidates = set()
+
+    # Absolute URLs
+    absolute_urls = re.findall(
+        r'https?://[^"\'\s<>]+',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    for url in absolute_urls:
+
+        url_clean = url.rstrip(
+            ".,);"
+        )
+
+        low = url_clean.lower()
+
+        if any(
+            key in low
+            for key in (
+                "/api/",
+                "api.",
+                "chart",
+                "history",
+                "historical",
+                "ohlc",
+                "series",
+            )
+        ):
+
+            candidates.add(
+                url_clean
+            )
+
+    # Relative paths
+    relative_paths = re.findall(
+        r'["\'](/[^"\']{1,250})["\']',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    for path in relative_paths:
+
+        low = path.lower()
+
+        if any(
+            key in low
+            for key in (
+                "/api/",
+                "chart",
+                "history",
+                "historical",
+                "ohlc",
+                "series",
+            )
+        ):
+
+            candidates.add(
+                path
+            )
+
+    return sorted(
+        candidates
+    )
+
+
+# ============================================================
+# TARGETED PAGE DISCOVERY
+# ============================================================
+
+def inspect_tgju_data(
+    html
+):
+
+    print(
+        "",
         flush=True,
     )
 
     print(
-        "-" * 50,
+        "🔎 TGJU TARGETED CHART DISCOVERY",
+        flush=True,
+    )
+
+    print(
+        "-" * 60,
         flush=True,
     )
 
     html_lower = html.lower()
 
     # --------------------------------------------------------
-    # Keyword scan
+    # 1. Important keywords
     # --------------------------------------------------------
 
     keywords = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "ohlc",
-        "historical",
-        "history",
-        "chart",
+        "profile_charts",
+        "technical_charts",
+        "profile_history",
         "series",
+        "ohlc",
+        "$.ajax",
+        "fetch(",
+        "xmlhttprequest",
     ]
 
     print(
-        "📊 TGJU PAGE KEYWORDS:",
+        "📊 IMPORTANT PAGE SIGNALS:",
         flush=True,
     )
 
     for keyword in keywords:
 
         count = html_lower.count(
-            keyword
+            keyword.lower()
         )
 
-        if count > 0:
+        if count:
 
             print(
-                f"   {keyword:<12}: {count}",
+                f"   {keyword:<22}: {count}",
                 flush=True,
             )
 
     # --------------------------------------------------------
-    # Search possible API URLs
+    # 2. Inspect inline scripts
     # --------------------------------------------------------
 
-    urls = re.findall(
-        r'https?://[^"\']+',
+    soup = BeautifulSoup(
         html,
+        "html.parser",
     )
 
-    possible_urls = set()
+    inline_scripts = []
 
-    for url in urls:
+    for script in soup.find_all(
+        "script"
+    ):
 
-        url_lower = url.lower()
+        if script.get("src"):
+            continue
 
-        if any(
-            keyword in url_lower
-            for keyword in [
-                "api",
-                "chart",
-                "history",
-                "historical",
-                "widget",
-                "data",
-            ]
+        content = script.string
+
+        if not content:
+            content = script.get_text()
+
+        if not content:
+            continue
+
+        inline_scripts.append(
+            content
+        )
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        f"📜 INLINE JS BLOCKS: {len(inline_scripts)}",
+        flush=True,
+    )
+
+    # فقط اسکریپت‌هایی که واقعاً نشانه دارند
+    relevant_inline = 0
+
+    for index, script in enumerate(
+        inline_scripts
+    ):
+
+        low = script.lower()
+
+        if not any(
+            keyword in low
+            for keyword in (
+                "profile_charts",
+                "technical_charts",
+                "profile_history",
+                "series",
+                "ohlc",
+                "$.ajax",
+                "fetch(",
+                "xmlhttprequest",
+            )
         ):
 
-            possible_urls.add(
-                url
-            )
+            continue
+
+        relevant_inline += 1
+
+        inspect_javascript(
+            script,
+            f"inline-script-{index}",
+        )
+
+        if relevant_inline >= 5:
+            break
 
     # --------------------------------------------------------
-    # Search relative API paths
+    # 3. Candidate endpoints directly in HTML
     # --------------------------------------------------------
 
-    relative_paths = re.findall(
-        r'["\']([^"\']*(?:api|chart|history|historical|widget|series|data)[^"\']*)["\']',
-        html,
-        flags=re.IGNORECASE,
+    candidates = find_candidate_endpoints(
+        html
     )
 
-    for path in relative_paths:
+    print(
+        "",
+        flush=True,
+    )
 
-        if len(path) < 300:
-
-            possible_urls.add(
-                path
-            )
-
-    # --------------------------------------------------------
-    # Output
-    # --------------------------------------------------------
-
-    if possible_urls:
+    if candidates:
 
         print(
-            "",
+            "🔗 CANDIDATE ENDPOINTS IN HTML:",
             flush=True,
         )
 
-        print(
-            "🔗 POSSIBLE TGJU DATA ENDPOINTS:",
-            flush=True,
-        )
-
-        counter = 0
-
-        for url in sorted(
-            possible_urls
-        ):
+        for candidate in candidates[:20]:
 
             print(
-                f"   {url[:500]}",
+                f"   {candidate}",
                 flush=True,
             )
-
-            counter += 1
-
-            # جلوگیری از شلوغ شدن لاگ
-            if counter >= 30:
-                break
 
     else:
 
         print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "⚠️ No obvious API/chart endpoint found in page.",
+            "⚠️ No direct endpoint found in HTML.",
             flush=True,
         )
 
     # --------------------------------------------------------
-    # Look for OHLC-like structures
+    # 4. Find JavaScript files
+    # --------------------------------------------------------
+
+    script_urls = find_script_urls(
+        html
+    )
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        f"📦 TGJU JS FILES FOUND: {len(script_urls)}",
+        flush=True,
+    )
+
+    for index, url in enumerate(
+        script_urls,
+        start=1,
+    ):
+
+        print(
+            f"   {index}. {url}",
+            flush=True,
+        )
+
+    # --------------------------------------------------------
+    # 5. Download only relevant JS files
+    # --------------------------------------------------------
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "🧠 SCANNING TGJU JAVASCRIPT...",
+        flush=True,
+    )
+
+    scanned = 0
+
+    for url in script_urls:
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=10,
+            )
+
+            if response.status_code != 200:
+                continue
+
+            js_text = response.text
+
+            low = js_text.lower()
+
+            # فقط فایل‌هایی که نشانه‌ای از chart/history/API دارند
+            if not any(
+                keyword in low
+                for keyword in (
+                    "profile_charts",
+                    "technical_charts",
+                    "profile_history",
+                    "series",
+                    "ohlc",
+                    "$.ajax",
+                    "fetch(",
+                    "xmlhttprequest",
+                    "/api/",
+                )
+            ):
+                continue
+
+            scanned += 1
+
+            inspect_javascript(
+                js_text,
+                url,
+            )
+
+            js_candidates = find_candidate_endpoints(
+                js_text
+            )
+
+            if js_candidates:
+
+                print(
+                    "   🔗 ENDPOINT CANDIDATES:",
+                    flush=True,
+                )
+
+                for candidate in js_candidates[:15]:
+
+                    print(
+                        f"      {candidate}",
+                        flush=True,
+                    )
+
+            if scanned >= 5:
+                break
+
+        except Exception as error:
+
+            print(
+                f"   ⚠️ JS scan failed: "
+                f"{type(error).__name__}",
+                flush=True,
+            )
+
+    # --------------------------------------------------------
+    # 6. Direct OHLC check
     # --------------------------------------------------------
 
     ohlc_patterns = [
@@ -268,29 +677,29 @@ def inspect_tgju_data(html):
     if ohlc_found:
 
         print(
-            "🕯️ POSSIBLE OHLC DATA: FOUND",
-            flush=True,
-        )
-
-        print(
-            "⚠️ This is only a discovery result.",
-            flush=True,
-        )
-
-        print(
-            "⚠️ It does NOT yet mean the data is usable.",
+            "🕯️ OHLC-LIKE STRUCTURE: FOUND",
             flush=True,
         )
 
     else:
 
         print(
-            "❌ Direct OHLC structure not found in page HTML.",
+            "❌ Direct OHLC data is NOT embedded in page HTML.",
             flush=True,
         )
 
     print(
-        "-" * 50,
+        "",
+        flush=True,
+    )
+
+    print(
+        "🏁 TGJU DISCOVERY FINISHED",
+        flush=True,
+    )
+
+    print(
+        "-" * 60,
         flush=True,
     )
 
@@ -326,7 +735,7 @@ def get_gold_18k():
         )
 
         # ----------------------------------------------------
-        # Historical / chart discovery
+        # Targeted discovery
         # ----------------------------------------------------
 
         inspect_tgju_data(
