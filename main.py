@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from data.collector_service import run_collector
 from data.collectors.tgju import get_gold_18k
 from data.collectors.world_gold import get_world_gold
+from data.collectors.usd_toman import get_usd_toman
 
 from database import (
     init_db,
@@ -47,14 +48,6 @@ print("DEBUG 1: main.py started", flush=True)
 # ============================================================
 
 def get_tgju_toman(data):
-    """
-    تبدیل قیمت TGJU به تومان.
-
-    اگر collector از قبل price_toman داشته باشد،
-    همان مقدار استفاده می‌شود.
-
-    در غیر این صورت قیمت فعلی بررسی می‌شود.
-    """
 
     if data.get("price_toman") is not None:
         return float(data["price_toman"])
@@ -65,13 +58,15 @@ def get_tgju_toman(data):
         data.get("currency", "")
     ).upper()
 
-    # TGJU geram18 معمولاً بر حسب ریال است.
-    if currency in ("IRR", "RLS", "RIAL", "ریال"):
+    if currency in (
+        "IRR",
+        "RLS",
+        "RIAL",
+        "ریال",
+    ):
         return price / 10
 
-    # محافظ برای نسخه فعلی collector:
-    # قیمت ریالی طلای 18K معمولاً حدود 10 برابر
-    # قیمت تومانی است.
+    # محافظ برای نسخه‌های فعلی TGJU collector
     if price > 100_000_000:
         return price / 10
 
@@ -79,23 +74,16 @@ def get_tgju_toman(data):
 
 
 # ============================================================
-# SOURCE TEST
+# TEST ALL SOURCES
 # ============================================================
 
 def test_all_sources():
-    """
-    تست سه منبع قیمت:
-
-    1. TGJU
-    2. Servix
-    3. World Gold API
-    """
 
     results = []
 
-    # --------------------------------------------------------
+    # ========================================================
     # TGJU
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -119,7 +107,8 @@ def test_all_sources():
         })
 
         print(
-            f"✅ TGJU: {tgju_price_toman:,.0f} تومان",
+            f"✅ TGJU: "
+            f"{tgju_price_toman:,.0f} تومان",
             flush=True
         )
 
@@ -136,9 +125,9 @@ def test_all_sources():
             "message": str(error),
         })
 
-    # --------------------------------------------------------
+    # ========================================================
     # SERVIX
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -184,9 +173,9 @@ def test_all_sources():
             "message": str(error),
         })
 
-    # --------------------------------------------------------
+    # ========================================================
     # WORLD GOLD
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -228,11 +217,65 @@ def test_all_sources():
             "message": str(error),
         })
 
+    # ========================================================
+    # USD / TOMAN
+    # ========================================================
+
+    try:
+
+        print(
+            "🧪 USD/TOMAN: starting test...",
+            flush=True
+        )
+
+        usd_data = get_usd_toman()
+
+        usd_mid = float(
+            usd_data["mid"]
+        )
+
+        usd_buy = float(
+            usd_data["buy"]
+        )
+
+        usd_sell = float(
+            usd_data["sell"]
+        )
+
+        results.append({
+            "name": "USD/Toman",
+            "ok": True,
+            "message": (
+                f"💵 Mid: {usd_mid:,.0f} تومان\n"
+                f"   خرید: {usd_buy:,.0f}\n"
+                f"   فروش: {usd_sell:,.0f}"
+            ),
+        })
+
+        print(
+            f"✅ USD/TOMAN: "
+            f"{usd_mid:,.0f} تومان",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            f"❌ USD/TOMAN TEST FAILED: {error}",
+            flush=True
+        )
+
+        results.append({
+            "name": "USD/Toman",
+            "ok": False,
+            "message": str(error),
+        })
+
     return results
 
 
 # ============================================================
-# TELEGRAM SOURCE TEST COMMAND
+# TELEGRAM SOURCE TEST
 # ============================================================
 
 async def source_test_command(
@@ -241,7 +284,7 @@ async def source_test_command(
 ):
 
     await update.message.reply_text(
-        "🧪 در حال بررسی سه منبع قیمت...\n\n"
+        "🧪 در حال بررسی منابع...\n\n"
         "لطفاً چند ثانیه صبر کنید."
     )
 
@@ -417,8 +460,6 @@ async def price_command(
 
         price = get_tgju_toman(data)
 
-        # برای حفظ ساختار فعلی دیتابیس
-        # فعلاً همان data ذخیره می‌شود.
         save_price(data)
 
         source = data.get(
@@ -572,11 +613,18 @@ async def about_command(
         "📡 منابع داده\n"
         "• TGJU\n"
         "• Servix\n"
-        "• World Gold API\n\n"
+        "• World Gold API\n"
+        "• NetArz USD/Toman\n\n"
 
         "🌎 داده جهانی\n"
         "• XAU/USD\n"
         "• قیمت هر اونس تروا\n\n"
+
+        "💵 داده ارزی\n"
+        "• دلار / تومان\n"
+        "• نرخ خرید\n"
+        "• نرخ فروش\n"
+        "• نرخ میانگین\n\n"
 
         "🔄 داده‌ها به‌صورت دوره‌ای "
         "دریافت و بررسی می‌شوند.\n\n"
@@ -748,11 +796,7 @@ def main():
         return
 
     # --------------------------------------------------------
-    # NOTE:
-    # Servix is NOT tested during startup.
-    #
-    # This prevents every Render restart/deploy from consuming
-    # one of the limited Servix requests.
+    # SERVIX STARTUP TEST DISABLED
     # --------------------------------------------------------
 
     print(
