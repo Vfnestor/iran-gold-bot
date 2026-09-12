@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -20,8 +21,7 @@ DB_PATH = os.path.join(
 # ============================================================
 
 # Servix اجازه 50 درخواست روزانه می‌دهد.
-# ما عمداً فقط 45 درخواست را استفاده می‌کنیم
-# تا 5 درخواست ذخیره اضطراری داشته باشیم.
+# ما عمداً فقط 45 درخواست را استفاده می‌کنیم.
 SERVIX_DAILY_LIMIT = 45
 
 
@@ -53,9 +53,17 @@ def init_db():
 
     cursor = conn.cursor()
 
-    # --------------------------------------------------------
-    # RAW GOLD PRICES
-    # --------------------------------------------------------
+    # ========================================================
+    # LEGACY RAW GOLD PRICES
+    # ========================================================
+    #
+    # این جدول برای سازگاری با نسخه قبلی پروژه نگه داشته شده.
+    #
+    # در معماری جدید Collector نباید قیمت‌های لحظه‌ای را
+    # در این جدول ذخیره کند.
+    #
+    # جدول فعلاً حذف نمی‌شود تا اطلاعات قبلی از بین نرود.
+    #
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_prices (
@@ -74,9 +82,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
+    # ========================================================
     # GOLD CANDLES
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_candles (
@@ -109,9 +117,135 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
+    # ========================================================
+    # MARKET SNAPSHOTS
+    # ========================================================
+    #
+    # هر رکورد = یک وضعیت بازار در یک زمان مشخص.
+    #
+    # قرار است Collector در معماری جدید تقریباً هر 5 دقیقه
+    # یک Snapshot ایجاد کند.
+    #
+    # قیمت‌های لحظه‌ای 10 ثانیه‌ای در این جدول ذخیره نمی‌شوند.
+    #
+    # منابع:
+    #
+    # TGJU       -> gold_18k_toman
+    # World Gold -> xau_usd
+    # USD/Toman  -> usd_buy / usd_sell / usd_mid
+    # Servix     -> servix_gold_18k_toman
+    #
+    # Servix می‌تواند NULL باشد.
+    #
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS market_snapshots (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            timestamp TEXT NOT NULL,
+
+            gold_18k_toman REAL,
+
+            world_gold_usd REAL,
+
+            usd_buy_toman REAL,
+
+            usd_sell_toman REAL,
+
+            usd_mid_toman REAL,
+
+            servix_gold_18k_toman REAL,
+
+            servix_timestamp TEXT,
+
+            tgju_timestamp TEXT,
+
+            world_gold_timestamp TEXT,
+
+            usd_timestamp TEXT,
+
+            created_at TEXT NOT NULL,
+
+            UNIQUE(timestamp)
+        )
+    """)
+
+    # ========================================================
+    # ANALYSIS HISTORY
+    # ========================================================
+    #
+    # فقط نتیجه تحلیل در این جدول ذخیره می‌شود.
+    #
+    # قیمت‌های خام لحظه‌ای اینجا ذخیره نمی‌شوند.
+    #
+    # این جدول بعداً تاریخچه اصلی دکمه «📊 تاریخچه» خواهد بود.
+    #
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_history (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            timestamp TEXT NOT NULL,
+
+            symbol TEXT NOT NULL,
+
+            price_toman REAL,
+
+            signal TEXT,
+
+            trend TEXT,
+
+            confidence REAL,
+
+            entry REAL,
+
+            stop_loss REAL,
+
+            take_profit_1 REAL,
+
+            take_profit_2 REAL,
+
+            take_profit_3 REAL,
+
+            risk_reward REAL,
+
+            rsi REAL,
+
+            macd REAL,
+
+            macd_signal REAL,
+
+            ema_fast REAL,
+
+            ema_slow REAL,
+
+            atr REAL,
+
+            momentum REAL,
+
+            support REAL,
+
+            resistance REAL,
+
+            world_gold_usd REAL,
+
+            usd_mid_toman REAL,
+
+            fair_value_toman REAL,
+
+            source_spread REAL,
+
+            analysis_data TEXT,
+
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # ========================================================
     # SERVIX DAILY QUOTA
-    # --------------------------------------------------------
+    # ========================================================
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS servix_usage (
@@ -124,9 +258,9 @@ def init_db():
         )
     """)
 
-    # --------------------------------------------------------
-    # INDEXES
-    # --------------------------------------------------------
+    # ========================================================
+    # INDEXES - LEGACY RAW PRICES
+    # ========================================================
 
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS
@@ -149,6 +283,10 @@ def init_db():
         ON gold_prices(symbol)
     """)
 
+    # ========================================================
+    # INDEXES - CANDLES
+    # ========================================================
+
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS
         idx_gold_candles_timeframe
@@ -168,6 +306,42 @@ def init_db():
         idx_gold_candles_symbol
 
         ON gold_candles(symbol)
+    """)
+
+    # ========================================================
+    # INDEXES - MARKET SNAPSHOTS
+    # ========================================================
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_market_snapshots_timestamp
+
+        ON market_snapshots(timestamp)
+    """)
+
+    # ========================================================
+    # INDEXES - ANALYSIS HISTORY
+    # ========================================================
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_analysis_history_timestamp
+
+        ON analysis_history(timestamp)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_analysis_history_signal
+
+        ON analysis_history(signal)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_analysis_history_symbol
+
+        ON analysis_history(symbol)
     """)
 
     conn.commit()
@@ -192,6 +366,17 @@ def get_current_utc_date():
 
 
 # ============================================================
+# CURRENT UTC TIMESTAMP
+# ============================================================
+
+def get_current_timestamp():
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+# ============================================================
 # RESERVE SERVIX REQUEST
 # ============================================================
 
@@ -201,28 +386,13 @@ def reserve_servix_request(
     """
     رزرو یک درخواست Servix.
 
-    این تابع قبل از ارسال HTTP request فراخوانی می‌شود.
+    قبل از ارسال HTTP request فراخوانی می‌شود.
 
     اگر سهمیه موجود باشد:
-
-        True
+        allowed = True
 
     اگر سهمیه تمام شده باشد:
-
-        False
-
-    خروجی:
-
-    {
-        "allowed": True/False,
-        "used": int,
-        "remaining": int,
-        "date": str
-    }
-
-    نکته:
-    تراکنش به صورت IMMEDIATE انجام می‌شود تا
-    دو درخواست همزمان نتوانند یک سهمیه را دوبار مصرف کنند.
+        allowed = False
     """
 
     usage_date = get_current_utc_date()
@@ -233,17 +403,9 @@ def reserve_servix_request(
 
         cursor = conn.cursor()
 
-        # ----------------------------------------------------
-        # شروع تراکنش قفل‌شده
-        # ----------------------------------------------------
-
         conn.execute(
             "BEGIN IMMEDIATE"
         )
-
-        # ----------------------------------------------------
-        # دریافت مصرف امروز
-        # ----------------------------------------------------
 
         cursor.execute("""
             SELECT request_count
@@ -267,40 +429,26 @@ def reserve_servix_request(
                 row[0]
             )
 
-        # ----------------------------------------------------
-        # بررسی سهمیه
-        # ----------------------------------------------------
-
         if current_count >= daily_limit:
 
             conn.rollback()
 
             return {
 
-                "allowed":
-                    False,
+                "allowed": False,
 
-                "used":
-                    current_count,
+                "used": current_count,
 
-                "remaining":
-                    0,
+                "remaining": 0,
 
-                "date":
-                    usage_date,
+                "date": usage_date,
             }
-
-        # ----------------------------------------------------
-        # افزایش شمارنده
-        # ----------------------------------------------------
 
         new_count = (
             current_count + 1
         )
 
-        updated_at = datetime.now(
-            timezone.utc
-        ).isoformat()
+        updated_at = get_current_timestamp()
 
         cursor.execute("""
             INSERT INTO servix_usage (
@@ -338,17 +486,13 @@ def reserve_servix_request(
 
         return {
 
-            "allowed":
-                True,
+            "allowed": True,
 
-            "used":
-                new_count,
+            "used": new_count,
 
-            "remaining":
-                remaining,
+            "remaining": remaining,
 
-            "date":
-                usage_date,
+            "date": usage_date,
         }
 
     except Exception:
@@ -369,9 +513,6 @@ def reserve_servix_request(
 def get_servix_usage(
     daily_limit=SERVIX_DAILY_LIMIT
 ):
-    """
-    دریافت وضعیت سهمیه Servix برای امروز.
-    """
 
     usage_date = get_current_utc_date()
 
@@ -400,11 +541,9 @@ def get_servix_usage(
 
         conn.close()
 
-
     if row is None:
 
         used = 0
-
         updated_at = None
 
     else:
@@ -415,29 +554,22 @@ def get_servix_usage(
 
         updated_at = row[1]
 
-
     remaining = max(
         0,
         daily_limit - used
     )
 
-
     return {
 
-        "date":
-            usage_date,
+        "date": usage_date,
 
-        "used":
-            used,
+        "used": used,
 
-        "remaining":
-            remaining,
+        "remaining": remaining,
 
-        "limit":
-            daily_limit,
+        "limit": daily_limit,
 
-        "updated_at":
-            updated_at,
+        "updated_at": updated_at,
     }
 
 
@@ -471,8 +603,14 @@ def reset_servix_usage():
 
 
 # ============================================================
-# SAVE RAW PRICE
+# SAVE LEGACY RAW PRICE
 # ============================================================
+#
+# این تابع برای سازگاری با فایل‌های قدیمی نگه داشته شده.
+#
+# در مرحله Collector بعدی دیگر از این تابع برای ذخیره
+# قیمت‌های لحظه‌ای استفاده نخواهیم کرد.
+#
 
 def save_price(data):
 
@@ -482,9 +620,7 @@ def save_price(data):
 
     if not timestamp:
 
-        timestamp = datetime.now(
-            timezone.utc
-        ).isoformat()
+        timestamp = get_current_timestamp()
 
     conn = get_connection()
 
@@ -516,7 +652,7 @@ def save_price(data):
     conn.close()
 
     print(
-        f"💾 Price saved: "
+        f"💾 Legacy price saved: "
         f"{data['price']:,} "
         f"{data['currency']}",
         flush=True
@@ -555,12 +691,6 @@ def get_latest_prices(
     rows = cursor.fetchall()
 
     conn.close()
-
-    print(
-        f"📊 History records found: "
-        f"{len(rows)}",
-        flush=True
-    )
 
     return rows
 
@@ -605,6 +735,684 @@ def get_latest_price(
 
 
 # ============================================================
+# SAVE MARKET SNAPSHOT
+# ============================================================
+
+def save_market_snapshot(
+    timestamp=None,
+    gold_18k_toman=None,
+    world_gold_usd=None,
+    usd_buy_toman=None,
+    usd_sell_toman=None,
+    usd_mid_toman=None,
+    servix_gold_18k_toman=None,
+    servix_timestamp=None,
+    tgju_timestamp=None,
+    world_gold_timestamp=None,
+    usd_timestamp=None
+):
+    """
+    ذخیره یک Snapshot از وضعیت بازار.
+
+    هر Snapshot نماینده یک لحظه مشخص از بازار است.
+
+    قیمت‌های لحظه‌ای در اینجا ذخیره نمی‌شوند؛
+    Collector باید تقریباً هر 5 دقیقه یک Snapshot بسازد.
+    """
+
+    if timestamp is None:
+
+        timestamp = get_current_timestamp()
+
+    created_at = get_current_timestamp()
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO market_snapshots (
+
+            timestamp,
+
+            gold_18k_toman,
+
+            world_gold_usd,
+
+            usd_buy_toman,
+            usd_sell_toman,
+            usd_mid_toman,
+
+            servix_gold_18k_toman,
+
+            servix_timestamp,
+
+            tgju_timestamp,
+            world_gold_timestamp,
+            usd_timestamp,
+
+            created_at
+
+        )
+
+        VALUES (
+
+            ?,
+
+            ?,
+
+            ?,
+
+            ?,
+            ?,
+            ?,
+
+            ?,
+
+            ?,
+
+            ?,
+            ?,
+            ?,
+
+            ?
+
+        )
+
+        ON CONFLICT(timestamp)
+
+        DO UPDATE SET
+
+            gold_18k_toman =
+                excluded.gold_18k_toman,
+
+            world_gold_usd =
+                excluded.world_gold_usd,
+
+            usd_buy_toman =
+                excluded.usd_buy_toman,
+
+            usd_sell_toman =
+                excluded.usd_sell_toman,
+
+            usd_mid_toman =
+                excluded.usd_mid_toman,
+
+            servix_gold_18k_toman =
+                excluded.servix_gold_18k_toman,
+
+            servix_timestamp =
+                excluded.servix_timestamp,
+
+            tgju_timestamp =
+                excluded.tgju_timestamp,
+
+            world_gold_timestamp =
+                excluded.world_gold_timestamp,
+
+            usd_timestamp =
+                excluded.usd_timestamp
+    """, (
+
+        timestamp,
+
+        gold_18k_toman,
+
+        world_gold_usd,
+
+        usd_buy_toman,
+        usd_sell_toman,
+        usd_mid_toman,
+
+        servix_gold_18k_toman,
+
+        servix_timestamp,
+
+        tgju_timestamp,
+        world_gold_timestamp,
+        usd_timestamp,
+
+        created_at
+    ))
+
+    conn.commit()
+
+    conn.close()
+
+    print(
+        f"📊 Market snapshot saved: "
+        f"{timestamp}",
+        flush=True
+    )
+
+
+# ============================================================
+# GET MARKET HISTORY
+# ============================================================
+
+def get_market_history(
+    limit=100
+):
+    """
+    دریافت تاریخچه Snapshotهای بازار.
+
+    جدیدترین رکورد ابتدا برمی‌گردد.
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            timestamp,
+
+            gold_18k_toman,
+
+            world_gold_usd,
+
+            usd_buy_toman,
+            usd_sell_toman,
+            usd_mid_toman,
+
+            servix_gold_18k_toman,
+
+            servix_timestamp,
+
+            tgju_timestamp,
+            world_gold_timestamp,
+            usd_timestamp
+
+        FROM market_snapshots
+
+        ORDER BY timestamp DESC
+
+        LIMIT ?
+    """, (
+        limit,
+    ))
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# GET LATEST MARKET SNAPSHOT
+# ============================================================
+
+def get_latest_market_snapshot():
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            timestamp,
+
+            gold_18k_toman,
+
+            world_gold_usd,
+
+            usd_buy_toman,
+            usd_sell_toman,
+            usd_mid_toman,
+
+            servix_gold_18k_toman,
+
+            servix_timestamp,
+
+            tgju_timestamp,
+            world_gold_timestamp,
+            usd_timestamp
+
+        FROM market_snapshots
+
+        ORDER BY timestamp DESC
+
+        LIMIT 1
+    """)
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+# ============================================================
+# SAVE ANALYSIS
+# ============================================================
+
+def save_analysis(
+    analysis
+):
+    """
+    ذخیره نتیجه نهایی موتور تحلیل.
+
+    analysis می‌تواند علاوه بر فیلدهای اصلی،
+    اطلاعات اضافی را نیز داخل analysis_data داشته باشد.
+    """
+
+    timestamp = (
+        analysis.get("timestamp")
+        or get_current_timestamp()
+    )
+
+    created_at = get_current_timestamp()
+
+    # --------------------------------------------------------
+    # اطلاعات تکمیلی تحلیل
+    # --------------------------------------------------------
+
+    analysis_data = analysis.get(
+        "analysis_data"
+    )
+
+    if analysis_data is None:
+
+        analysis_data = {}
+
+    if not isinstance(
+        analysis_data,
+        str
+    ):
+
+        try:
+
+            analysis_data = json.dumps(
+                analysis_data,
+                ensure_ascii=False
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            analysis_data = "{}"
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO analysis_history (
+
+            timestamp,
+
+            symbol,
+
+            price_toman,
+
+            signal,
+
+            trend,
+
+            confidence,
+
+            entry,
+
+            stop_loss,
+
+            take_profit_1,
+            take_profit_2,
+            take_profit_3,
+
+            risk_reward,
+
+            rsi,
+
+            macd,
+            macd_signal,
+
+            ema_fast,
+            ema_slow,
+
+            atr,
+
+            momentum,
+
+            support,
+            resistance,
+
+            world_gold_usd,
+
+            usd_mid_toman,
+
+            fair_value_toman,
+
+            source_spread,
+
+            analysis_data,
+
+            created_at
+
+        )
+
+        VALUES (
+
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?
+
+        )
+    """, (
+
+        timestamp,
+
+        analysis.get(
+            "symbol",
+            "gold_18k"
+        ),
+
+        analysis.get(
+            "price_toman"
+        ),
+
+        analysis.get(
+            "signal"
+        ),
+
+        analysis.get(
+            "trend"
+        ),
+
+        analysis.get(
+            "confidence"
+        ),
+
+        analysis.get(
+            "entry"
+        ),
+
+        analysis.get(
+            "stop_loss"
+        ),
+
+        analysis.get(
+            "take_profit_1"
+        ),
+
+        analysis.get(
+            "take_profit_2"
+        ),
+
+        analysis.get(
+            "take_profit_3"
+        ),
+
+        analysis.get(
+            "risk_reward"
+        ),
+
+        analysis.get(
+            "rsi"
+        ),
+
+        analysis.get(
+            "macd"
+        ),
+
+        analysis.get(
+            "macd_signal"
+        ),
+
+        analysis.get(
+            "ema_fast"
+        ),
+
+        analysis.get(
+            "ema_slow"
+        ),
+
+        analysis.get(
+            "atr"
+        ),
+
+        analysis.get(
+            "momentum"
+        ),
+
+        analysis.get(
+            "support"
+        ),
+
+        analysis.get(
+            "resistance"
+        ),
+
+        analysis.get(
+            "world_gold_usd"
+        ),
+
+        analysis.get(
+            "usd_mid_toman"
+        ),
+
+        analysis.get(
+            "fair_value_toman"
+        ),
+
+        analysis.get(
+            "source_spread"
+        ),
+
+        analysis_data,
+
+        created_at
+    ))
+
+    conn.commit()
+
+    analysis_id = cursor.lastrowid
+
+    conn.close()
+
+    print(
+        f"🧠 Analysis saved: "
+        f"id={analysis_id} "
+        f"signal={analysis.get('signal')}",
+        flush=True
+    )
+
+    return analysis_id
+
+
+# ============================================================
+# GET ANALYSIS HISTORY
+# ============================================================
+
+def get_analysis_history(
+    limit=20
+):
+    """
+    تاریخچه اصلی تحلیل.
+
+    این تابع همان چیزی است که بعداً دکمه
+    «📊 تاریخچه» از آن استفاده خواهد کرد.
+
+    قیمت‌های خام منابع اینجا نمایش داده نمی‌شوند.
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            id,
+
+            timestamp,
+
+            symbol,
+
+            price_toman,
+
+            signal,
+
+            trend,
+
+            confidence,
+
+            entry,
+
+            stop_loss,
+
+            take_profit_1,
+            take_profit_2,
+            take_profit_3,
+
+            risk_reward,
+
+            rsi,
+
+            macd,
+            macd_signal,
+
+            ema_fast,
+            ema_slow,
+
+            atr,
+
+            momentum,
+
+            support,
+            resistance,
+
+            world_gold_usd,
+
+            usd_mid_toman,
+
+            fair_value_toman,
+
+            source_spread,
+
+            analysis_data
+
+        FROM analysis_history
+
+        ORDER BY timestamp DESC
+
+        LIMIT ?
+    """, (
+        limit,
+    ))
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# GET LATEST ANALYSIS
+# ============================================================
+
+def get_latest_analysis():
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            id,
+
+            timestamp,
+
+            symbol,
+
+            price_toman,
+
+            signal,
+
+            trend,
+
+            confidence,
+
+            entry,
+
+            stop_loss,
+
+            take_profit_1,
+            take_profit_2,
+            take_profit_3,
+
+            risk_reward,
+
+            rsi,
+
+            macd,
+            macd_signal,
+
+            ema_fast,
+            ema_slow,
+
+            atr,
+
+            momentum,
+
+            support,
+            resistance,
+
+            world_gold_usd,
+
+            usd_mid_toman,
+
+            fair_value_toman,
+
+            source_spread,
+
+            analysis_data
+
+        FROM analysis_history
+
+        ORDER BY timestamp DESC
+
+        LIMIT 1
+    """)
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+# ============================================================
 # SAVE CANDLE
 # ============================================================
 
@@ -619,9 +1427,7 @@ def save_candle(
     volume=0
 ):
 
-    created_at = datetime.now(
-        timezone.utc
-    ).isoformat()
+    created_at = get_current_timestamp()
 
     conn = get_connection()
 
@@ -780,7 +1586,7 @@ def get_database_stats():
     cursor = conn.cursor()
 
     # --------------------------------------------------------
-    # RAW PRICE COUNT
+    # LEGACY RAW PRICE COUNT
     # --------------------------------------------------------
 
     cursor.execute("""
@@ -802,7 +1608,33 @@ def get_database_stats():
     total_candles = cursor.fetchone()[0]
 
     # --------------------------------------------------------
-    # SOURCE COUNTS
+    # MARKET SNAPSHOT COUNT
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM market_snapshots
+    """)
+
+    total_market_snapshots = (
+        cursor.fetchone()[0]
+    )
+
+    # --------------------------------------------------------
+    # ANALYSIS COUNT
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM analysis_history
+    """)
+
+    total_analyses = (
+        cursor.fetchone()[0]
+    )
+
+    # --------------------------------------------------------
+    # SOURCE COUNTS - LEGACY
     # --------------------------------------------------------
 
     cursor.execute("""
@@ -852,24 +1684,50 @@ def get_database_stats():
         timeframe_counts[timeframe] = count
 
     # --------------------------------------------------------
-    # LATEST PRICE
+    # LATEST MARKET SNAPSHOT
     # --------------------------------------------------------
 
     cursor.execute("""
         SELECT timestamp
 
-        FROM gold_prices
+        FROM market_snapshots
 
-        ORDER BY id DESC
+        ORDER BY timestamp DESC
 
         LIMIT 1
     """)
 
-    latest_price_row = cursor.fetchone()
+    latest_snapshot_row = (
+        cursor.fetchone()
+    )
 
-    latest_price_timestamp = (
-        latest_price_row[0]
-        if latest_price_row
+    latest_snapshot_timestamp = (
+        latest_snapshot_row[0]
+        if latest_snapshot_row
+        else None
+    )
+
+    # --------------------------------------------------------
+    # LATEST ANALYSIS
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT timestamp
+
+        FROM analysis_history
+
+        ORDER BY timestamp DESC
+
+        LIMIT 1
+    """)
+
+    latest_analysis_row = (
+        cursor.fetchone()
+    )
+
+    latest_analysis_timestamp = (
+        latest_analysis_row[0]
+        if latest_analysis_row
         else None
     )
 
@@ -882,12 +1740,14 @@ def get_database_stats():
 
         FROM gold_candles
 
-        ORDER BY id DESC
+        ORDER BY timestamp DESC
 
         LIMIT 1
     """)
 
-    latest_candle_row = cursor.fetchone()
+    latest_candle_row = (
+        cursor.fetchone()
+    )
 
     latest_candle_timestamp = (
         latest_candle_row[0]
@@ -896,12 +1756,36 @@ def get_database_stats():
     )
 
     # --------------------------------------------------------
+    # LEGACY LATEST PRICE
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT timestamp
+
+        FROM gold_prices
+
+        ORDER BY id DESC
+
+        LIMIT 1
+    """)
+
+    latest_price_row = (
+        cursor.fetchone()
+    )
+
+    latest_price_timestamp = (
+        latest_price_row[0]
+        if latest_price_row
+        else None
+    )
+
+    conn.close()
+
+    # --------------------------------------------------------
     # SERVIX USAGE
     # --------------------------------------------------------
 
     servix_usage = get_servix_usage()
-
-    conn.close()
 
     return {
 
@@ -911,6 +1795,12 @@ def get_database_stats():
         "total_candles":
             total_candles,
 
+        "total_market_snapshots":
+            total_market_snapshots,
+
+        "total_analyses":
+            total_analyses,
+
         "source_counts":
             source_counts,
 
@@ -919,6 +1809,12 @@ def get_database_stats():
 
         "latest_price_timestamp":
             latest_price_timestamp,
+
+        "latest_snapshot_timestamp":
+            latest_snapshot_timestamp,
+
+        "latest_analysis_timestamp":
+            latest_analysis_timestamp,
 
         "latest_candle_timestamp":
             latest_candle_timestamp,
@@ -980,10 +1876,13 @@ if __name__ == "__main__":
         "========================================"
     )
 
-    # ساخت جداول در صورت نبودن
+    # ساخت جداول
     init_db()
 
-    # وضعیت Servix
+    # --------------------------------------------------------
+    # SERVIX STATUS
+    # --------------------------------------------------------
+
     usage = get_servix_usage()
 
     print(
@@ -1006,12 +1905,25 @@ if __name__ == "__main__":
         f"{usage['limit']}"
     )
 
-    # وضعیت کلی دیتابیس
+    # --------------------------------------------------------
+    # DATABASE STATUS
+    # --------------------------------------------------------
+
     stats = get_database_stats()
 
     print(
-        f"💾 Total prices    : "
+        f"💾 Legacy prices   : "
         f"{stats['total_prices']}"
+    )
+
+    print(
+        f"📊 Market snapshots: "
+        f"{stats['total_market_snapshots']}"
+    )
+
+    print(
+        f"🧠 Analyses        : "
+        f"{stats['total_analyses']}"
     )
 
     print(
