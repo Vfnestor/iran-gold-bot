@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import requests
 from bs4 import BeautifulSoup
 
+from database import save_tgju_price_points
+
 
 # ============================================================
 # CONFIG
@@ -383,6 +385,41 @@ def print_series_diagnostic(series):
 
 
 # ============================================================
+# SAVE RAW TGJU SERIES
+# ============================================================
+
+def save_intraday_series(series):
+
+    if not series:
+
+        print(
+            "⚠️ TGJU: no intraday points to save.",
+            flush=True,
+        )
+
+        return {
+            "received": 0,
+            "saved": 0,
+            "duplicates": 0,
+        }
+
+    result = save_tgju_price_points(
+        series,
+        symbol="gold_18k",
+    )
+
+    print(
+        "💾 TGJU RAW SERIES: "
+        f"received={result['received']} "
+        f"saved={result['saved']} "
+        f"duplicates={result['duplicates']}",
+        flush=True,
+    )
+
+    return result
+
+
+# ============================================================
 # MAIN COLLECTOR
 # ============================================================
 
@@ -421,6 +458,14 @@ def get_gold_18k():
         )
 
         print_series_diagnostic(
+            series
+        )
+
+        # ----------------------------------------------------
+        # Save raw intraday points
+        # ----------------------------------------------------
+
+        save_intraday_series(
             series
         )
 
