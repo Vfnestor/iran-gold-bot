@@ -1,6 +1,7 @@
 import os
 import threading
 import traceback
+import time
 
 from dotenv import load_dotenv
 
@@ -27,11 +28,19 @@ from data.collectors.usd_toman import get_usd_toman
 
 from database import (
     init_db,
-    save_price,
-    get_latest_prices,
+    get_latest_market_snapshot,
+    get_analysis_history,
+    get_latest_analysis,
 )
 
-from candle_engine import build_1m_candle
+from candle_engine import (
+    get_recent_candles,
+)
+
+from analysis_engine import (
+    run_analysis,
+    format_analysis_summary,
+)
 
 
 # ============================================================
@@ -40,7 +49,17 @@ from candle_engine import build_1m_candle
 
 load_dotenv()
 
-print("DEBUG 1: main.py started", flush=True)
+print(
+    "DEBUG 1: main.py started",
+    flush=True
+)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+ANALYSIS_INTERVAL = 5 * 60
 
 
 # ============================================================
@@ -50,12 +69,20 @@ print("DEBUG 1: main.py started", flush=True)
 def get_tgju_toman(data):
 
     if data.get("price_toman") is not None:
-        return float(data["price_toman"])
 
-    price = float(data["price"])
+        return float(
+            data["price_toman"]
+        )
+
+    price = float(
+        data["price"]
+    )
 
     currency = str(
-        data.get("currency", "")
+        data.get(
+            "currency",
+            ""
+        )
     ).upper()
 
     if currency in (
@@ -64,10 +91,11 @@ def get_tgju_toman(data):
         "RIAL",
         "ریال",
     ):
+
         return price / 10
 
-    # محافظ برای نسخه‌های فعلی TGJU collector
     if price > 100_000_000:
+
         return price / 10
 
     return price
@@ -231,15 +259,30 @@ def test_all_sources():
         usd_data = get_usd_toman()
 
         usd_mid = float(
-            usd_data["mid"]
+            usd_data.get(
+                "mid",
+                usd_data.get(
+                    "mid_toman"
+                )
+            )
         )
 
         usd_buy = float(
-            usd_data["buy"]
+            usd_data.get(
+                "buy",
+                usd_data.get(
+                    "buy_toman"
+                )
+            )
         )
 
         usd_sell = float(
-            usd_data["sell"]
+            usd_data.get(
+                "sell",
+                usd_data.get(
+                    "sell_toman"
+                )
+            )
         )
 
         results.append({
@@ -357,7 +400,9 @@ async def source_test_command(
 # HEALTH CHECK SERVER
 # ============================================================
 
-class HealthHandler(BaseHTTPRequestHandler):
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
 
     def do_GET(self):
 
@@ -374,7 +419,12 @@ class HealthHandler(BaseHTTPRequestHandler):
             b"Iran Gold AI is running."
         )
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
+
         return
 
 
@@ -411,7 +461,46 @@ def start_health_server():
 
 
 # ============================================================
-# TELEGRAM COMMANDS
+# TELEGRAM MENU
+# ============================================================
+
+def get_main_keyboard():
+
+    keyboard = [
+        [
+            KeyboardButton(
+                "🟡 قیمت لحظه‌ای"
+            ),
+            KeyboardButton(
+                "📊 تاریخچه"
+            ),
+        ],
+        [
+            KeyboardButton(
+                "📈 کندل‌ها"
+            ),
+            KeyboardButton(
+                "🧠 تحلیل"
+            ),
+        ],
+        [
+            KeyboardButton(
+                "🧪 تست منابع"
+            ),
+            KeyboardButton(
+                "ℹ️ درباره"
+            ),
+        ],
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True
+    )
+
+
+# ============================================================
+# START COMMAND
 # ============================================================
 
 async def start_command(
@@ -419,29 +508,11 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    keyboard = [
-        [
-            KeyboardButton("🟡 قیمت لحظه‌ای"),
-            KeyboardButton("📊 تاریخچه"),
-        ],
-        [
-            KeyboardButton("📈 کندل‌ها"),
-            KeyboardButton("🧪 تست منابع"),
-        ],
-        [
-            KeyboardButton("ℹ️ درباره"),
-        ],
-    ]
-
-    reply_markup = ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True
-    )
-
     await update.message.reply_text(
         "🤖 به Iran Gold AI خوش آمدید.\n\n"
+        "سیستم هوشمند تحلیل بازار طلای ایران.\n\n"
         "یک گزینه را انتخاب کنید:",
-        reply_markup=reply_markup
+        reply_markup=get_main_keyboard()
     )
 
 
@@ -456,25 +527,52 @@ async def price_command(
 
     try:
 
+        snapshot = (
+            get_latest_market_snapshot()
+        )
+
+        if snapshot:
+
+            price = snapshot.get(
+                "gold_18k_toman"
+            )
+
+            timestamp = snapshot.get(
+                "timestamp",
+                ""
+            )
+
+            if price is not None:
+
+                await update.message.reply_text(
+                    "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
+                    f"💰 قیمت: "
+                    f"{float(price):,.0f} تومان\n"
+                    "📡 منبع: TGJU\n"
+                    f"🕐 زمان: {timestamp}"
+                )
+
+                return
+
+        # ----------------------------------------------------
+        # FALLBACK
+        # ----------------------------------------------------
+
         data = get_gold_18k()
 
-        price = get_tgju_toman(data)
-
-        save_price(data)
+        price = get_tgju_toman(
+            data
+        )
 
         source = data.get(
             "source",
             "TGJU"
         )
 
-        message = (
+        await update.message.reply_text(
             "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
             f"💰 قیمت: {price:,.0f} تومان\n"
             f"📡 منبع: {source}"
-        )
-
-        await update.message.reply_text(
-            message
         )
 
     except Exception as error:
@@ -503,41 +601,78 @@ async def history_command(
 
     try:
 
-        prices = get_latest_prices(10)
+        analyses = get_analysis_history(
+            limit=10
+        )
 
-        if not prices:
+        if not analyses:
 
             await update.message.reply_text(
-                "📊 هنوز داده‌ای در دیتابیس وجود ندارد."
+                "📊 هنوز تحلیل ثبت‌شده‌ای "
+                "در دیتابیس وجود ندارد.\n\n"
+                "بعد از جمع شدن داده کافی، "
+                "تاریخچه تحلیل‌ها اینجا نمایش داده می‌شود."
             )
 
             return
 
         lines = [
-            "📊 آخرین قیمت‌های ثبت‌شده:",
-            ""
+            "📊 تاریخچه تحلیل‌های Iran Gold AI",
+            "",
         ]
 
-        for item in prices:
+        for index, item in enumerate(
+            analyses,
+            start=1
+        ):
 
-            try:
+            price = item.get(
+                "price_toman"
+            )
 
-                price = item["price"]
+            confidence = item.get(
+                "confidence"
+            )
 
-                timestamp = item.get(
-                    "timestamp",
-                    ""
-                )
+            signal = item.get(
+                "signal",
+                "HOLD"
+            )
 
-                lines.append(
-                    f"💰 {price:,} | {timestamp}"
-                )
+            trend = item.get(
+                "trend",
+                "خنثی"
+            )
 
-            except Exception:
+            timestamp = item.get(
+                "timestamp",
+                ""
+            )
 
-                lines.append(
-                    str(item)
-                )
+            price_text = (
+                f"{float(price):,.0f} تومان"
+                if price is not None
+                else "نامشخص"
+            )
+
+            confidence_text = (
+                f"{float(confidence):.0f}%"
+                if confidence is not None
+                else "—"
+            )
+
+            lines.append(
+                f"{index}. "
+                f"💰 {price_text}\n"
+                f"   🎯 {signal} | "
+                f"📈 {trend} | "
+                f"📊 {confidence_text}\n"
+                f"   🕐 {timestamp}"
+            )
+
+            lines.append(
+                "━━━━━━━━━━━━━━━━"
+            )
 
         await update.message.reply_text(
             "\n".join(lines)
@@ -551,8 +686,10 @@ async def history_command(
             flush=True
         )
 
+        traceback.print_exc()
+
         await update.message.reply_text(
-            "❌ خطا در دریافت تاریخچه."
+            "❌ خطا در دریافت تاریخچه تحلیل."
         )
 
 
@@ -567,19 +704,57 @@ async def candle_command(
 
     try:
 
-        candles = build_1m_candle()
+        messages = []
 
-        if not candles:
+        for timeframe in (
+            "5m",
+            "15m",
+            "1h",
+        ):
 
-            await update.message.reply_text(
-                "🕯️ هنوز کندلی ساخته نشده است."
+            candles = get_recent_candles(
+                timeframe=timeframe,
+                limit=1
             )
 
-            return
+            if not candles:
+
+                messages.append(
+                    f"🕯️ {timeframe}: "
+                    "هنوز کندلی وجود ندارد."
+                )
+
+                continue
+
+            candle = candles[0]
+
+            open_price = candle.get(
+                "open"
+            )
+
+            high_price = candle.get(
+                "high"
+            )
+
+            low_price = candle.get(
+                "low"
+            )
+
+            close_price = candle.get(
+                "close"
+            )
+
+            messages.append(
+                f"🕯️ کندل {timeframe}\n"
+                f"   O: {float(open_price):,.0f}\n"
+                f"   H: {float(high_price):,.0f}\n"
+                f"   L: {float(low_price):,.0f}\n"
+                f"   C: {float(close_price):,.0f}"
+            )
 
         await update.message.reply_text(
-            f"🕯️ تعداد کندل‌های ۱ دقیقه‌ای: "
-            f"{len(candles)}"
+            "📈 آخرین کندل‌ها\n\n"
+            + "\n\n".join(messages)
         )
 
     except Exception as error:
@@ -590,8 +765,61 @@ async def candle_command(
             flush=True
         )
 
+        traceback.print_exc()
+
         await update.message.reply_text(
             "❌ خطا در دریافت کندل‌ها."
+        )
+
+
+# ============================================================
+# ANALYSIS COMMAND
+# ============================================================
+
+async def analysis_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🧠 در حال انجام تحلیل بازار...\n\n"
+        "لطفاً چند ثانیه صبر کنید."
+    )
+
+    try:
+
+        analysis = run_analysis()
+
+        if not analysis:
+
+            await update.message.reply_text(
+                "⚠️ هنوز داده کافی برای تحلیل وجود ندارد.\n\n"
+                "سیستم باید ابتدا چند کندل ۵ دقیقه‌ای "
+                "جمع‌آوری کند."
+            )
+
+            return
+
+        message = format_analysis_summary(
+            analysis
+        )
+
+        await update.message.reply_text(
+            message
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ ANALYSIS COMMAND ERROR:",
+            error,
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            "❌ خطا در انجام تحلیل."
         )
 
 
@@ -626,24 +854,35 @@ async def about_command(
         "• نرخ فروش\n"
         "• نرخ میانگین\n\n"
 
-        "🔄 داده‌ها به‌صورت دوره‌ای "
-        "دریافت و بررسی می‌شوند.\n\n"
+        "🔄 جمع‌آوری بازار\n"
+        "• هر ۵ دقیقه\n"
+        "• ذخیره Market Snapshot\n"
+        "• ساخت کندل ۵ دقیقه‌ای\n"
+        "• ساخت کندل ۱۵ دقیقه‌ای\n"
+        "• ساخت کندل ۱ ساعته\n\n"
 
-        "🕯️ موتور تحلیل\n"
-        "• کندل ۱ دقیقه‌ای\n"
-        "• کندل ۵ دقیقه‌ای\n"
-        "• کندل ۱۵ دقیقه‌ای\n"
-        "• کندل ۱ ساعته\n\n"
+        "🧠 موتور تحلیل\n"
+        "• EMA\n"
+        "• RSI\n"
+        "• MACD\n"
+        "• ATR\n"
+        "• Momentum\n"
+        "• Support / Resistance\n"
+        "• Fair Value\n"
+        "• Trend\n"
+        "• Signal\n"
+        "• Confidence\n"
+        "• Entry / SL / TP\n\n"
 
         "🗄️ وضعیت سیستم\n"
         "• دیتابیس: فعال\n"
         "• جمع‌آوری داده: فعال\n"
         "• موتور کندل: فعال\n"
-        "• اعتبارسنجی چندمنبعی: در حال توسعه\n\n"
+        "• موتور تحلیل: فعال\n\n"
 
         "🚀 هدف Iran Gold AI:\n"
-        "ارائه داده‌های دقیق و قابل اعتماد "
-        "برای تحلیل بازار طلای ایران.\n\n"
+        "ارائه تحلیل داده‌محور و قابل اعتماد "
+        "برای بازار طلای ایران.\n\n"
 
         "❤️ تقدیم به دختر عزیزم، پناه"
     )
@@ -677,6 +916,13 @@ async def text_handler(
     elif text == "📈 کندل‌ها":
 
         await candle_command(
+            update,
+            context
+        )
+
+    elif text == "🧠 تحلیل":
+
+        await analysis_command(
             update,
             context
         )
@@ -735,6 +981,53 @@ def start_collector():
         )
 
         traceback.print_exc()
+
+
+# ============================================================
+# ANALYSIS THREAD
+# ============================================================
+
+def start_analysis_engine():
+
+    print(
+        "🧠 ANALYSIS THREAD: starting...",
+        flush=True
+    )
+
+    while True:
+
+        try:
+
+            analysis = run_analysis()
+
+            if analysis:
+
+                print(
+                    "🧠 Scheduled analysis saved.",
+                    flush=True
+                )
+
+            else:
+
+                print(
+                    "ℹ️ Scheduled analysis skipped "
+                    "(not enough data yet).",
+                    flush=True
+                )
+
+        except Exception as error:
+
+            print(
+                "❌ ANALYSIS THREAD ERROR:",
+                error,
+                flush=True
+            )
+
+            traceback.print_exc()
+
+        time.sleep(
+            ANALYSIS_INTERVAL
+        )
 
 
 # ============================================================
@@ -872,6 +1165,22 @@ def main():
 
     print(
         "🟢 Collector thread started.",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # ANALYSIS
+    # --------------------------------------------------------
+
+    analysis_thread = threading.Thread(
+        target=start_analysis_engine,
+        daemon=True
+    )
+
+    analysis_thread.start()
+
+    print(
+        "🧠 Analysis thread started.",
         flush=True
     )
 
