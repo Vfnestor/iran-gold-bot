@@ -68,20 +68,53 @@ def get_timeframe_start(timestamp, timeframe):
 
 
 # ============================================================
+# SAFE FLOAT
+# ============================================================
+
+def safe_float(value):
+    try:
+        if value is None:
+            return None
+
+        number = float(value)
+
+        if number != number:
+            return None
+
+        return number
+
+    except (TypeError, ValueError):
+        return None
+
+
+# ============================================================
 # MARKET SNAPSHOT HELPERS
 # ============================================================
 
 def get_recent_snapshots(limit=SNAPSHOT_LIMIT):
     """
-    دریافت Snapshotهای بازار از دیتابیس.
+    دریافت Snapshotهای بازار از database.py.
 
-    هر Snapshot تقریبا یک بار در 5 دقیقه ذخیره می‌شود.
+    ساختار واقعی get_market_history():
+
+        0  timestamp
+        1  gold_18k_toman
+        2  world_gold_usd
+        3  usd_buy_toman
+        4  usd_sell_toman
+        5  usd_mid_toman
+        6  servix_gold_18k_toman
+        7  servix_timestamp
+        8  tgju_timestamp
+        9  world_gold_timestamp
+        10 usd_timestamp
     """
 
     try:
         rows = get_market_history(
             limit=limit
         )
+
     except Exception as error:
         print(
             "❌ CANDLE ENGINE: "
@@ -91,56 +124,117 @@ def get_recent_snapshots(limit=SNAPSHOT_LIMIT):
         )
         return []
 
-    snapshots = []
+    if not rows:
+        print(
+            "⚠️ CANDLE ENGINE: "
+            "Database returned 0 market snapshots.",
+            flush=True,
+        )
+        return []
 
-    for row in rows:
+    snapshots = []
+    skipped = 0
+
+    for row_index, row in enumerate(rows):
+
         try:
-            # database.py:
-            # id,
-            # timestamp,
-            # gold_18k_toman,
-            # world_gold_usd,
-            # usd_buy_toman,
-            # usd_sell_toman,
-            # usd_mid_toman,
-            # servix_gold_18k_toman,
-            # servix_timestamp,
-            # tgju_timestamp,
-            # world_gold_timestamp,
-            # usd_timestamp,
-            # created_at
+            if not row or len(row) < 11:
+                skipped += 1
+
+                print(
+                    f"⚠️ CANDLE ENGINE: "
+                    f"Invalid snapshot row #{row_index}: "
+                    f"expected 11 columns, "
+                    f"got {len(row) if row else 0}",
+                    flush=True,
+                )
+
+                continue
+
+            timestamp = row[0]
+
+            gold_price = safe_float(
+                row[1]
+            )
+
+            if not timestamp:
+                skipped += 1
+                continue
+
+            if gold_price is None:
+                skipped += 1
+                continue
+
+            if gold_price <= 0:
+                skipped += 1
+                continue
 
             snapshot = {
-                "id": row[0],
-                "timestamp": row[1],
-                "gold_18k_toman": row[2],
-                "world_gold_usd": row[3],
-                "usd_buy_toman": row[4],
-                "usd_sell_toman": row[5],
-                "usd_mid_toman": row[6],
-                "servix_gold_18k_toman": row[7],
-                "servix_timestamp": row[8],
-                "tgju_timestamp": row[9],
-                "world_gold_timestamp": row[10],
-                "usd_timestamp": row[11],
-                "created_at": row[12],
+                "timestamp": timestamp,
+
+                "gold_18k_toman":
+                    gold_price,
+
+                "world_gold_usd":
+                    safe_float(row[2]),
+
+                "usd_buy_toman":
+                    safe_float(row[3]),
+
+                "usd_sell_toman":
+                    safe_float(row[4]),
+
+                "usd_mid_toman":
+                    safe_float(row[5]),
+
+                "servix_gold_18k_toman":
+                    safe_float(row[6]),
+
+                "servix_timestamp":
+                    row[7],
+
+                "tgju_timestamp":
+                    row[8],
+
+                "world_gold_timestamp":
+                    row[9],
+
+                "usd_timestamp":
+                    row[10],
             }
 
             parse_timestamp(
                 snapshot["timestamp"]
             )
 
-            if snapshot["gold_18k_toman"] is None:
-                continue
+            snapshots.append(
+                snapshot
+            )
 
-            snapshots.append(snapshot)
+        except Exception as error:
 
-        except Exception:
-            continue
+            skipped += 1
+
+            print(
+                "⚠️ CANDLE ENGINE: "
+                f"Skipped snapshot #{row_index}: "
+                f"{type(error).__name__}: {error}",
+                flush=True,
+            )
 
     snapshots.sort(
         key=lambda item:
-        parse_timestamp(item["timestamp"])
+        parse_timestamp(
+            item["timestamp"]
+        )
+    )
+
+    print(
+        f"📡 CANDLE ENGINE: "
+        f"Snapshots read={len(rows)} "
+        f"valid={len(snapshots)} "
+        f"skipped={skipped}",
+        flush=True,
     )
 
     return snapshots
@@ -155,21 +249,6 @@ def build_candle_from_snapshots(
     timeframe,
     symbol="gold_18k",
 ):
-    """
-    ساخت کندل OHLC از Snapshotهای بازار.
-
-    قیمت اصلی:
-        gold_18k_toman
-
-    نکته:
-    چون Snapshot هر 5 دقیقه ذخیره می‌شود،
-    کندل‌های واقعی قابل اتکا:
-        5m
-        15m
-        1h
-
-    هستند.
-    """
 
     if not snapshots:
         return None
@@ -182,16 +261,17 @@ def build_candle_from_snapshots(
     valid = []
 
     for snapshot in snapshots:
+
         try:
             timestamp = parse_timestamp(
                 snapshot["timestamp"]
             )
 
-            price = float(
+            price = safe_float(
                 snapshot["gold_18k_toman"]
             )
 
-            if price <= 0:
+            if price is None or price <= 0:
                 continue
 
             valid.append(
@@ -219,7 +299,9 @@ def build_candle_from_snapshots(
     bucket_end = (
         bucket_start
         + timedelta(
-            minutes=TIMEFRAME_MINUTES[timeframe]
+            minutes=TIMEFRAME_MINUTES[
+                timeframe
+            ]
         )
     )
 
@@ -243,13 +325,27 @@ def build_candle_from_snapshots(
     return {
         "symbol": symbol,
         "timeframe": timeframe,
-        "timestamp": bucket_start.isoformat(),
-        "open": prices[0],
-        "high": max(prices),
-        "low": min(prices),
-        "close": prices[-1],
-        "volume": len(prices),
-        "source_snapshots": len(prices),
+
+        "timestamp":
+            bucket_start.isoformat(),
+
+        "open":
+            prices[0],
+
+        "high":
+            max(prices),
+
+        "low":
+            min(prices),
+
+        "close":
+            prices[-1],
+
+        "volume":
+            len(prices),
+
+        "source_snapshots":
+            len(prices),
     }
 
 
@@ -258,28 +354,37 @@ def build_candle_from_snapshots(
 # ============================================================
 
 def save_candle_data(candle):
+
     if not candle:
-        return
+        return False
 
     try:
+
         save_candle(
             symbol=candle["symbol"],
             timeframe=candle["timeframe"],
             timestamp=candle["timestamp"],
+
             open_price=candle["open"],
             high_price=candle["high"],
             low_price=candle["low"],
             close_price=candle["close"],
+
             volume=candle["volume"],
         )
 
+        return True
+
     except Exception as error:
+
         print(
             "❌ CANDLE ENGINE: "
             f"Failed to save candle: "
             f"{type(error).__name__}: {error}",
             flush=True,
         )
+
+        return False
 
 
 # ============================================================
@@ -290,6 +395,7 @@ def print_candle(
     candle,
     title="🕯️ CANDLE",
 ):
+
     if not candle:
         return
 
@@ -309,27 +415,32 @@ def print_candle(
     )
 
     print(
-        f"   Open: {candle['open']:,.0f} تومان",
+        f"   Open: "
+        f"{candle['open']:,.0f} تومان",
         flush=True,
     )
 
     print(
-        f"   High: {candle['high']:,.0f} تومان",
+        f"   High: "
+        f"{candle['high']:,.0f} تومان",
         flush=True,
     )
 
     print(
-        f"   Low: {candle['low']:,.0f} تومان",
+        f"   Low: "
+        f"{candle['low']:,.0f} تومان",
         flush=True,
     )
 
     print(
-        f"   Close: {candle['close']:,.0f} تومان",
+        f"   Close: "
+        f"{candle['close']:,.0f} تومان",
         flush=True,
     )
 
     print(
-        f"   Samples: {candle['volume']}",
+        f"   Samples: "
+        f"{candle.get('source_snapshots', candle['volume'])}",
         flush=True,
     )
 
@@ -341,16 +452,19 @@ def print_candle(
 def build_5m_candle(
     symbol="gold_18k",
 ):
+
     snapshots = get_recent_snapshots(
         limit=SNAPSHOT_LIMIT
     )
 
     if not snapshots:
+
         print(
             "⚠️ CANDLE ENGINE: "
             "No market snapshots available.",
             flush=True,
         )
+
         return None
 
     candle = build_candle_from_snapshots(
@@ -360,7 +474,10 @@ def build_5m_candle(
     )
 
     if candle:
-        save_candle_data(candle)
+
+        save_candle_data(
+            candle
+        )
 
         print_candle(
             candle,
@@ -377,16 +494,11 @@ def build_5m_candle(
 def build_1m_candle(
     symbol="gold_18k",
 ):
+
     """
-    Compatibility function.
+    1M واقعی نداریم چون Snapshot هر 5 دقیقه ذخیره می‌شود.
 
-    در معماری جدید Snapshot هر 5 دقیقه ذخیره می‌شود،
-    بنابراین 1M واقعی قابل ساخت نیست.
-
-    برای جلوگیری از شکستن main.py،
-    آخرین Snapshot به صورت یک کندل سازگار برگردانده می‌شود.
-
-    تحلیل اصلی نباید روی این کندل مصنوعی انجام شود.
+    این تابع فقط برای compatibility نگه داشته شده.
     """
 
     snapshots = get_recent_snapshots(
@@ -394,40 +506,44 @@ def build_1m_candle(
     )
 
     if not snapshots:
+
         print(
             "⚠️ CANDLE ENGINE: "
-            "No market snapshot for 1M compatibility.",
+            "No market snapshot for "
+            "1M compatibility.",
             flush=True,
         )
+
         return None
 
     snapshot = snapshots[-1]
 
-    try:
-        timestamp = parse_timestamp(
-            snapshot["timestamp"]
-        )
+    timestamp = parse_timestamp(
+        snapshot["timestamp"]
+    )
 
-        price = float(
-            snapshot["gold_18k_toman"]
-        )
+    price = safe_float(
+        snapshot["gold_18k_toman"]
+    )
 
-    except Exception:
+    if price is None:
         return None
 
-    candle = {
+    return {
         "symbol": symbol,
         "timeframe": "1m",
-        "timestamp": timestamp.isoformat(),
+
+        "timestamp":
+            timestamp.isoformat(),
+
         "open": price,
         "high": price,
         "low": price,
         "close": price,
+
         "volume": 1,
         "synthetic": True,
     }
-
-    return candle
 
 
 # ============================================================
@@ -438,6 +554,7 @@ def get_recent_1m_candles(
     symbol="gold_18k",
     limit=500,
 ):
+
     rows = get_candles(
         symbol=symbol,
         timeframe="1m",
@@ -447,23 +564,36 @@ def get_recent_1m_candles(
     candles = []
 
     for row in rows:
+
         try:
-            candles.append({
-                "symbol": symbol,
-                "timeframe": "1m",
-                "timestamp": row[0],
-                "open": row[1],
-                "high": row[2],
-                "low": row[3],
-                "close": row[4],
-                "volume": row[5],
-            })
+
+            if len(row) < 6:
+                continue
+
+            candles.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": "1m",
+
+                    "timestamp": row[0],
+
+                    "open": row[1],
+                    "high": row[2],
+                    "low": row[3],
+                    "close": row[4],
+
+                    "volume": row[5],
+                }
+            )
+
         except Exception:
             continue
 
     candles.sort(
         key=lambda candle:
-        parse_timestamp(candle["timestamp"])
+        parse_timestamp(
+            candle["timestamp"]
+        )
     )
 
     return candles
@@ -478,6 +608,7 @@ def get_recent_candles(
     symbol="gold_18k",
     limit=500,
 ):
+
     rows = get_candles(
         symbol=symbol,
         timeframe=timeframe,
@@ -487,23 +618,36 @@ def get_recent_candles(
     candles = []
 
     for row in rows:
+
         try:
-            candles.append({
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "timestamp": row[0],
-                "open": row[1],
-                "high": row[2],
-                "low": row[3],
-                "close": row[4],
-                "volume": row[5],
-            })
+
+            if len(row) < 6:
+                continue
+
+            candles.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+
+                    "timestamp": row[0],
+
+                    "open": row[1],
+                    "high": row[2],
+                    "low": row[3],
+                    "close": row[4],
+
+                    "volume": row[5],
+                }
+            )
+
         except Exception:
             continue
 
     candles.sort(
         key=lambda candle:
-        parse_timestamp(candle["timestamp"])
+        parse_timestamp(
+            candle["timestamp"]
+        )
     )
 
     return candles
@@ -516,9 +660,11 @@ def get_recent_candles(
 def build_timeframe_candles(
     timeframe,
     symbol="gold_18k",
-    limit=500,
+    limit=SNAPSHOT_LIMIT,
 ):
+
     if timeframe not in TIMEFRAME_MINUTES:
+
         raise ValueError(
             f"Unsupported timeframe: {timeframe}"
         )
@@ -528,13 +674,14 @@ def build_timeframe_candles(
     # --------------------------------------------------------
 
     if timeframe == "1m":
+
         return get_recent_1m_candles(
             symbol=symbol,
             limit=limit,
         )
 
     # --------------------------------------------------------
-    # Market snapshots
+    # MARKET SNAPSHOTS
     # --------------------------------------------------------
 
     snapshots = get_recent_snapshots(
@@ -542,15 +689,18 @@ def build_timeframe_candles(
     )
 
     if not snapshots:
+
         print(
             f"⚠️ CANDLE ENGINE: "
-            f"No market snapshots for {timeframe}.",
+            f"No market snapshots for "
+            f"{timeframe}.",
             flush=True,
         )
+
         return []
 
     # --------------------------------------------------------
-    # Group snapshots by timeframe
+    # GROUP SNAPSHOTS
     # --------------------------------------------------------
 
     buckets = {}
@@ -558,15 +708,16 @@ def build_timeframe_candles(
     for snapshot in snapshots:
 
         try:
+
             timestamp = parse_timestamp(
                 snapshot["timestamp"]
             )
 
-            price = float(
+            price = safe_float(
                 snapshot["gold_18k_toman"]
             )
 
-            if price <= 0:
+            if price is None or price <= 0:
                 continue
 
             bucket_start = get_timeframe_start(
@@ -586,18 +737,32 @@ def build_timeframe_candles(
                 )
             )
 
-        except Exception:
+        except Exception as error:
+
+            print(
+                "⚠️ CANDLE ENGINE: "
+                f"Invalid snapshot while "
+                f"building {timeframe}: "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True,
+            )
+
             continue
 
     # --------------------------------------------------------
-    # Build candles
+    # BUILD CANDLES
     # --------------------------------------------------------
 
     candles = []
 
-    for bucket_key in sorted(buckets.keys()):
+    for bucket_key in sorted(
+        buckets.keys()
+    ):
 
-        values = buckets[bucket_key]
+        values = buckets[
+            bucket_key
+        ]
 
         values.sort(
             key=lambda item: item[0]
@@ -613,17 +778,35 @@ def build_timeframe_candles(
 
         candle = {
             "symbol": symbol,
-            "timeframe": timeframe,
-            "timestamp": bucket_key,
-            "open": prices[0],
-            "high": max(prices),
-            "low": min(prices),
-            "close": prices[-1],
-            "volume": len(prices),
-            "source_snapshots": len(values),
+
+            "timeframe":
+                timeframe,
+
+            "timestamp":
+                bucket_key,
+
+            "open":
+                prices[0],
+
+            "high":
+                max(prices),
+
+            "low":
+                min(prices),
+
+            "close":
+                prices[-1],
+
+            "volume":
+                len(prices),
+
+            "source_snapshots":
+                len(values),
         }
 
-        candles.append(candle)
+        candles.append(
+            candle
+        )
 
         save_candle_data(
             candle
@@ -646,21 +829,32 @@ def build_timeframe_candles(
 def build_all_timeframes(
     symbol="gold_18k",
 ):
+
     results = {}
 
-    # 1M compatibility only
-    results["1m"] = get_recent_1m_candles(
-        symbol=symbol,
-        limit=500,
+    # --------------------------------------------------------
+    # 1M
+    # --------------------------------------------------------
+
+    results["1m"] = (
+        get_recent_1m_candles(
+            symbol=symbol,
+            limit=500,
+        )
     )
 
-    for timeframe in [
+    # --------------------------------------------------------
+    # 5M / 15M / 1H
+    # --------------------------------------------------------
+
+    for timeframe in (
         "5m",
         "15m",
         "1h",
-    ]:
+    ):
 
         try:
+
             results[timeframe] = (
                 build_timeframe_candles(
                     timeframe=timeframe,
@@ -692,6 +886,7 @@ def get_latest_timeframe_candle(
     timeframe,
     symbol="gold_18k",
 ):
+
     rows = get_candles(
         symbol=symbol,
         timeframe=timeframe,
@@ -703,16 +898,113 @@ def get_latest_timeframe_candle(
 
     row = rows[0]
 
+    if len(row) < 6:
+        return None
+
     return {
         "symbol": symbol,
-        "timeframe": timeframe,
-        "timestamp": row[0],
-        "open": row[1],
-        "high": row[2],
-        "low": row[3],
-        "close": row[4],
-        "volume": row[5],
+
+        "timeframe":
+            timeframe,
+
+        "timestamp":
+            row[0],
+
+        "open":
+            row[1],
+
+        "high":
+            row[2],
+
+        "low":
+            row[3],
+
+        "close":
+            row[4],
+
+        "volume":
+            row[5],
     }
+
+
+# ============================================================
+# DATABASE / CANDLE DIAGNOSTIC
+# ============================================================
+
+def diagnose_candle_engine():
+
+    print(
+        "\n"
+        "========================================\n"
+        "🧪 CANDLE ENGINE DIAGNOSTIC\n"
+        "========================================",
+        flush=True,
+    )
+
+    snapshots = get_recent_snapshots(
+        limit=20
+    )
+
+    print(
+        f"📡 Valid snapshots: "
+        f"{len(snapshots)}",
+        flush=True,
+    )
+
+    if snapshots:
+
+        first = snapshots[0]
+        last = snapshots[-1]
+
+        print(
+            f"🕐 Oldest snapshot: "
+            f"{first['timestamp']}",
+            flush=True,
+        )
+
+        print(
+            f"🕐 Newest snapshot: "
+            f"{last['timestamp']}",
+            flush=True,
+        )
+
+        print(
+            f"💰 Latest gold: "
+            f"{last['gold_18k_toman']:,.0f} تومان",
+            flush=True,
+        )
+
+    for timeframe in (
+        "5m",
+        "15m",
+        "1h",
+    ):
+
+        candles = (
+            build_timeframe_candles(
+                timeframe=timeframe,
+                symbol="gold_18k",
+                limit=500,
+            )
+        )
+
+        print(
+            f"🕯️ {timeframe}: "
+            f"{len(candles)} candles",
+            flush=True,
+        )
+
+        if candles:
+
+            print_candle(
+                candles[-1],
+                f"📊 LATEST {timeframe}",
+            )
+
+    print(
+        "========================================\n",
+        flush=True,
+    )
 
 
 # ============================================================
@@ -728,79 +1020,10 @@ if __name__ == "__main__":
 
     try:
 
-        print(
-            "\n📡 Reading market snapshots...",
-            flush=True,
-        )
-
-        snapshots = get_recent_snapshots(
-            limit=10
-        )
+        diagnose_candle_engine()
 
         print(
-            f"   Snapshots: {len(snapshots)}",
-            flush=True,
-        )
-
-        print(
-            "\n🕯️ Building 5M...",
-            flush=True,
-        )
-
-        build_timeframe_candles(
-            "5m"
-        )
-
-        print(
-            "\n🕯️ Building 15M...",
-            flush=True,
-        )
-
-        build_timeframe_candles(
-            "15m"
-        )
-
-        print(
-            "\n🕯️ Building 1H...",
-            flush=True,
-        )
-
-        build_timeframe_candles(
-            "1h"
-        )
-
-        print(
-            "\n📊 Latest candles:",
-            flush=True,
-        )
-
-        for timeframe in [
-            "5m",
-            "15m",
-            "1h",
-        ]:
-
-            candle = get_latest_timeframe_candle(
-                timeframe
-            )
-
-            if candle:
-
-                print_candle(
-                    candle,
-                    f"📊 LATEST {timeframe}",
-                )
-
-            else:
-
-                print(
-                    f"⚠️ "
-                    f"No {timeframe} candle.",
-                    flush=True,
-                )
-
-        print(
-            "\n⚠️ 1M note: "
+            "⚠️ 1M note: "
             "Raw 1M candle generation is disabled "
             "because raw prices are no longer stored.",
             flush=True,
