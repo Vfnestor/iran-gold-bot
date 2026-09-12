@@ -1,6 +1,5 @@
 import re
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,10 +13,6 @@ TGJU_URL = "https://www.tgju.org/profile/geram18"
 
 REQUEST_TIMEOUT = 15
 
-MAX_SCRIPT_FILES = 10
-
-MAX_CONTEXT_PER_MATCH = 1200
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -28,7 +23,7 @@ HEADERS = {
 
 
 # ============================================================
-# SAFE REQUEST
+# REQUEST
 # ============================================================
 
 def fetch_tgju_page():
@@ -85,107 +80,180 @@ def extract_current_price(html):
 
 
 # ============================================================
-# HELPERS
+# FIND TGJU PRICE SERIES
 # ============================================================
 
-def clean_text(text):
+def extract_price_series(html):
+
     """
-    حذف فاصله‌ها و نویزهای اضافی برای لاگ.
+    TGJU chart data appears in the page as pairs:
+
+        [timestamp_ms, price]
+
+    Example:
+
+        [1789215616000, 240895000]
+
+    This function extracts candidate intraday series
+    from inline JavaScript.
     """
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
-
-
-def get_context(
-    text,
-    position,
-    radius=MAX_CONTEXT_PER_MATCH,
-):
-    """
-    بخشی از متن اطراف یک match را برمی‌گرداند.
-    """
-
-    start = max(
-        0,
-        position - radius,
-    )
-
-    end = min(
-        len(text),
-        position + radius,
-    )
-
-    return clean_text(
-        text[start:end]
-    )
-
-
-# ============================================================
-# FIND SCRIPT FILES
-# ============================================================
-
-def find_script_urls(html):
 
     soup = BeautifulSoup(
         html,
         "html.parser",
     )
 
-    script_urls = []
+    candidate_series = []
 
-    for script in soup.find_all(
-        "script"
+    # --------------------------------------------------------
+    # Inspect inline JavaScript
+    # --------------------------------------------------------
+
+    for script_index, script in enumerate(
+        soup.find_all("script")
     ):
 
-        src = script.get(
-            "src"
-        )
-
-        if not src:
+        if script.get("src"):
             continue
 
-        url = urljoin(
-            TGJU_URL,
-            src,
-        )
+        script_text = script.string
 
-        parsed = urlparse(
-            url
-        )
+        if not script_text:
+            script_text = script.get_text()
 
-        # فقط فایل‌های JS مربوط به خود TGJU
-        if parsed.netloc not in (
-            "www.tgju.org",
-            "tgju.org",
-        ):
+        if not script_text:
             continue
 
-        if url not in script_urls:
+        # ----------------------------------------------------
+        # Only inspect scripts containing chart data
+        # ----------------------------------------------------
 
-            script_urls.append(
-                url
+        if "chartData" not in script_text:
+            continue
+
+        if "msHighcharts" not in script_text:
+            continue
+
+        # ----------------------------------------------------
+        # Find chartData sections
+        # ----------------------------------------------------
+
+        chart_positions = [
+            match.start()
+            for match in re.finditer(
+                r"chartData\s*:",
+                script_text,
+                flags=re.IGNORECASE,
+            )
+        ]
+
+        for position in chart_positions:
+
+            section = script_text[
+                position:
+                position + 500000
+            ]
+
+            # ------------------------------------------------
+            # Extract timestamp / price pairs
+            # ------------------------------------------------
+
+            matches = re.findall(
+                r"\[\s*(\d{12,13})\s*,\s*([\d.]+)\s*\]",
+                section,
             )
 
-    return script_urls[:MAX_SCRIPT_FILES]
+            if not matches:
+                continue
+
+            points = []
+
+            for timestamp_raw, price_raw in matches:
+
+                try:
+
+                    timestamp_ms = int(
+                        timestamp_raw
+                    )
+
+                    price = float(
+                        price_raw
+                    )
+
+                except ValueError:
+                    continue
+
+                # --------------------------------------------
+                # Basic validation
+                # --------------------------------------------
+
+                if timestamp_ms <= 0:
+                    continue
+
+                if price <= 0:
+                    continue
+
+                timestamp = datetime.fromtimestamp(
+                    timestamp_ms / 1000,
+                    tz=timezone.utc,
+                )
+
+                points.append(
+                    {
+                        "timestamp": timestamp,
+                        "timestamp_ms": timestamp_ms,
+                        "price": price,
+                    }
+                )
+
+            if len(points) >= 5:
+
+                candidate_series.append(
+                    points
+                )
+
+    # ========================================================
+    # Select best candidate
+    # ========================================================
+
+    if not candidate_series:
+
+        return []
+
+    # طولانی‌ترین سری معمولاً سری اصلی نمودار است.
+    best_series = max(
+        candidate_series,
+        key=len,
+    )
+
+    # --------------------------------------------------------
+    # Remove duplicate timestamps
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for point in best_series:
+
+        unique[
+            point["timestamp_ms"]
+        ] = point
+
+    result = list(
+        unique.values()
+    )
+
+    result.sort(
+        key=lambda x: x["timestamp_ms"]
+    )
+
+    return result
 
 
 # ============================================================
-# SEARCH JAVASCRIPT
+# PRINT SERIES DIAGNOSTIC
 # ============================================================
 
-def inspect_javascript(
-    js_text,
-    source_name,
-):
-    """
-    جستجوی هدفمند برای پیدا کردن منبع داده نمودار.
-    """
+def print_series_diagnostic(series):
 
     print(
         "",
@@ -193,187 +261,7 @@ def inspect_javascript(
     )
 
     print(
-        f"🧩 JS SCAN: {source_name}",
-        flush=True,
-    )
-
-    # --------------------------------------------------------
-    # الگوهای مهم
-    # --------------------------------------------------------
-
-    patterns = [
-        (
-            "AJAX",
-            r"\$\.ajax\s*\(",
-        ),
-        (
-            "GET",
-            r"\$\.get\s*\(",
-        ),
-        (
-            "POST",
-            r"\$\.post\s*\(",
-        ),
-        (
-            "FETCH",
-            r"\bfetch\s*\(",
-        ),
-        (
-            "XHR",
-            r"XMLHttpRequest",
-        ),
-        (
-            "SERIES",
-            r"\bseries\s*[:=]",
-        ),
-        (
-            "CHART",
-            r"profile_charts|technical_charts|chart",
-        ),
-        (
-            "HISTORY",
-            r"profile_history|historical|history",
-        ),
-        (
-            "OHLC",
-            r"\bohlc\b|open\s*[:=].*high\s*[:=].*low\s*[:=].*close",
-        ),
-        (
-            "API",
-            r"[/\"']api[/\"']|/api/|api/",
-        ),
-    ]
-
-    found_any = False
-
-    for label, pattern in patterns:
-
-        match = re.search(
-            pattern,
-            js_text,
-            flags=re.IGNORECASE,
-        )
-
-        if not match:
-            continue
-
-        found_any = True
-
-        context = get_context(
-            js_text,
-            match.start(),
-        )
-
-        print(
-            f"   🔎 {label}:",
-            flush=True,
-        )
-
-        print(
-            f"      {context[:MAX_CONTEXT_PER_MATCH]}",
-            flush=True,
-        )
-
-    if not found_any:
-
-        print(
-            "   — no relevant chart/API pattern",
-            flush=True,
-        )
-
-
-# ============================================================
-# EXTRACT POSSIBLE ENDPOINTS
-# ============================================================
-
-def find_candidate_endpoints(
-    text
-):
-    """
-    URLهای احتمالی مربوط به API / chart / history
-    """
-
-    candidates = set()
-
-    # Absolute URLs
-    absolute_urls = re.findall(
-        r'https?://[^"\'\s<>]+',
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    for url in absolute_urls:
-
-        url_clean = url.rstrip(
-            ".,);"
-        )
-
-        low = url_clean.lower()
-
-        if any(
-            key in low
-            for key in (
-                "/api/",
-                "api.",
-                "chart",
-                "history",
-                "historical",
-                "ohlc",
-                "series",
-            )
-        ):
-
-            candidates.add(
-                url_clean
-            )
-
-    # Relative paths
-    relative_paths = re.findall(
-        r'["\'](/[^"\']{1,250})["\']',
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    for path in relative_paths:
-
-        low = path.lower()
-
-        if any(
-            key in low
-            for key in (
-                "/api/",
-                "chart",
-                "history",
-                "historical",
-                "ohlc",
-                "series",
-            )
-        ):
-
-            candidates.add(
-                path
-            )
-
-    return sorted(
-        candidates
-    )
-
-
-# ============================================================
-# TARGETED PAGE DISCOVERY
-# ============================================================
-
-def inspect_tgju_data(
-    html
-):
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "🔎 TGJU TARGETED CHART DISCOVERY",
+        "🕯️ TGJU INTRADAY SERIES",
         flush=True,
     )
 
@@ -382,321 +270,111 @@ def inspect_tgju_data(
         flush=True,
     )
 
-    html_lower = html.lower()
+    if not series:
 
-    # --------------------------------------------------------
-    # 1. Important keywords
-    # --------------------------------------------------------
+        print(
+            "❌ No TGJU price series found.",
+            flush=True,
+        )
 
-    keywords = [
-        "profile_charts",
-        "technical_charts",
-        "profile_history",
-        "series",
-        "ohlc",
-        "$.ajax",
-        "fetch(",
-        "xmlhttprequest",
-    ]
+        print(
+            "-" * 60,
+            flush=True,
+        )
+
+        return
 
     print(
-        "📊 IMPORTANT PAGE SIGNALS:",
+        f"📊 POINTS FOUND: {len(series)}",
         flush=True,
     )
 
-    for keyword in keywords:
+    first = series[0]
+    last = series[-1]
 
-        count = html_lower.count(
-            keyword.lower()
-        )
-
-        if count:
-
-            print(
-                f"   {keyword:<22}: {count}",
-                flush=True,
-            )
-
-    # --------------------------------------------------------
-    # 2. Inspect inline scripts
-    # --------------------------------------------------------
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
+    print(
+        f"🕐 FIRST: "
+        f"{first['timestamp'].isoformat()} "
+        f"| {first['price']:,.0f}",
+        flush=True,
     )
 
-    inline_scripts = []
+    print(
+        f"🕐 LAST : "
+        f"{last['timestamp'].isoformat()} "
+        f"| {last['price']:,.0f}",
+        flush=True,
+    )
 
-    for script in soup.find_all(
-        "script"
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "📈 LAST 10 POINTS:",
+        flush=True,
+    )
+
+    for point in series[-10:]:
+
+        print(
+            f"   {point['timestamp'].isoformat()} "
+            f"| {point['price']:,.0f}",
+            flush=True,
+        )
+
+    print(
+        "",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # Estimate sampling interval
+    # --------------------------------------------------------
+
+    intervals = []
+
+    for previous, current in zip(
+        series[-50:-1],
+        series[-49:],
     ):
 
-        if script.get("src"):
-            continue
-
-        content = script.string
-
-        if not content:
-            content = script.get_text()
-
-        if not content:
-            continue
-
-        inline_scripts.append(
-            content
+        delta = (
+            current["timestamp_ms"]
+            - previous["timestamp_ms"]
         )
 
-    print(
-        "",
-        flush=True,
-    )
+        if delta > 0:
 
-    print(
-        f"📜 INLINE JS BLOCKS: {len(inline_scripts)}",
-        flush=True,
-    )
-
-    # فقط اسکریپت‌هایی که واقعاً نشانه دارند
-    relevant_inline = 0
-
-    for index, script in enumerate(
-        inline_scripts
-    ):
-
-        low = script.lower()
-
-        if not any(
-            keyword in low
-            for keyword in (
-                "profile_charts",
-                "technical_charts",
-                "profile_history",
-                "series",
-                "ohlc",
-                "$.ajax",
-                "fetch(",
-                "xmlhttprequest",
+            intervals.append(
+                delta / 1000
             )
-        ):
 
-            continue
+    if intervals:
 
-        relevant_inline += 1
-
-        inspect_javascript(
-            script,
-            f"inline-script-{index}",
+        average_interval = (
+            sum(intervals)
+            / len(intervals)
         )
-
-        if relevant_inline >= 5:
-            break
-
-    # --------------------------------------------------------
-    # 3. Candidate endpoints directly in HTML
-    # --------------------------------------------------------
-
-    candidates = find_candidate_endpoints(
-        html
-    )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    if candidates:
 
         print(
-            "🔗 CANDIDATE ENDPOINTS IN HTML:",
+            f"⏱️ AVG SAMPLE INTERVAL: "
+            f"{average_interval:.2f} sec",
             flush=True,
         )
 
-        for candidate in candidates[:20]:
-
-            print(
-                f"   {candidate}",
-                flush=True,
-            )
-
-    else:
-
         print(
-            "⚠️ No direct endpoint found in HTML.",
+            f"⏱️ MIN SAMPLE INTERVAL: "
+            f"{min(intervals):.2f} sec",
             flush=True,
         )
 
-    # --------------------------------------------------------
-    # 4. Find JavaScript files
-    # --------------------------------------------------------
-
-    script_urls = find_script_urls(
-        html
-    )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        f"📦 TGJU JS FILES FOUND: {len(script_urls)}",
-        flush=True,
-    )
-
-    for index, url in enumerate(
-        script_urls,
-        start=1,
-    ):
-
         print(
-            f"   {index}. {url}",
+            f"⏱️ MAX SAMPLE INTERVAL: "
+            f"{max(intervals):.2f} sec",
             flush=True,
         )
-
-    # --------------------------------------------------------
-    # 5. Download only relevant JS files
-    # --------------------------------------------------------
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "🧠 SCANNING TGJU JAVASCRIPT...",
-        flush=True,
-    )
-
-    scanned = 0
-
-    for url in script_urls:
-
-        try:
-
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=10,
-            )
-
-            if response.status_code != 200:
-                continue
-
-            js_text = response.text
-
-            low = js_text.lower()
-
-            # فقط فایل‌هایی که نشانه‌ای از chart/history/API دارند
-            if not any(
-                keyword in low
-                for keyword in (
-                    "profile_charts",
-                    "technical_charts",
-                    "profile_history",
-                    "series",
-                    "ohlc",
-                    "$.ajax",
-                    "fetch(",
-                    "xmlhttprequest",
-                    "/api/",
-                )
-            ):
-                continue
-
-            scanned += 1
-
-            inspect_javascript(
-                js_text,
-                url,
-            )
-
-            js_candidates = find_candidate_endpoints(
-                js_text
-            )
-
-            if js_candidates:
-
-                print(
-                    "   🔗 ENDPOINT CANDIDATES:",
-                    flush=True,
-                )
-
-                for candidate in js_candidates[:15]:
-
-                    print(
-                        f"      {candidate}",
-                        flush=True,
-                    )
-
-            if scanned >= 5:
-                break
-
-        except Exception as error:
-
-            print(
-                f"   ⚠️ JS scan failed: "
-                f"{type(error).__name__}",
-                flush=True,
-            )
-
-    # --------------------------------------------------------
-    # 6. Direct OHLC check
-    # --------------------------------------------------------
-
-    ohlc_patterns = [
-        r'"open"\s*:',
-        r'"high"\s*:',
-        r'"low"\s*:',
-        r'"close"\s*:',
-        r"'open'\s*:",
-        r"'high'\s*:",
-        r"'low'\s*:",
-        r"'close'\s*:",
-    ]
-
-    ohlc_found = []
-
-    for pattern in ohlc_patterns:
-
-        if re.search(
-            pattern,
-            html,
-            flags=re.IGNORECASE,
-        ):
-
-            ohlc_found.append(
-                pattern
-            )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    if ohlc_found:
-
-        print(
-            "🕯️ OHLC-LIKE STRUCTURE: FOUND",
-            flush=True,
-        )
-
-    else:
-
-        print(
-            "❌ Direct OHLC data is NOT embedded in page HTML.",
-            flush=True,
-        )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "🏁 TGJU DISCOVERY FINISHED",
-        flush=True,
-    )
 
     print(
         "-" * 60,
@@ -735,11 +413,15 @@ def get_gold_18k():
         )
 
         # ----------------------------------------------------
-        # Targeted discovery
+        # Extract intraday series
         # ----------------------------------------------------
 
-        inspect_tgju_data(
+        series = extract_price_series(
             html
+        )
+
+        print_series_diagnostic(
+            series
         )
 
         # ----------------------------------------------------
@@ -762,6 +444,7 @@ def get_gold_18k():
             "currency": "IRR",
             "timestamp": timestamp,
             "source": "tgju",
+            "series": series,
         }
 
     except requests.RequestException as error:
