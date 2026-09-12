@@ -3,6 +3,7 @@ import threading
 import traceback
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 
 from dotenv import load_dotenv
 
@@ -43,6 +44,8 @@ from analysis.analysis_engine import (
     format_analysis_summary,
 )
 
+from openpyxl import Workbook
+
 
 # ============================================================
 # ENVIRONMENT
@@ -61,6 +64,17 @@ print(
 # ============================================================
 
 ANALYSIS_INTERVAL = 5 * 60
+
+CANDLE_TIMEFRAMES = (
+    "1m",
+    "5m",
+    "15m",
+    "1h",
+)
+
+CANDLE_DISPLAY_LIMIT = 20
+
+CANDLE_EXPORT_LIMIT = 10000
 
 
 # ============================================================
@@ -215,20 +229,697 @@ def format_timestamp(timestamp):
 
 
 # ============================================================
+# CANDLE HELPERS
+# ============================================================
+
+def candle_to_dict(candle):
+    """
+    Convert candle tuple/dict to a normalized dictionary.
+
+    Expected tuple from candle_engine/database:
+        timestamp, open, high, low, close, volume
+    """
+
+    if candle is None:
+        return None
+
+    if isinstance(candle, dict):
+        return {
+            "timestamp": candle.get("timestamp"),
+            "open": candle.get("open"),
+            "high": candle.get("high"),
+            "low": candle.get("low"),
+            "close": candle.get("close"),
+            "volume": candle.get("volume", 0),
+        }
+
+    if isinstance(candle, (tuple, list)):
+        if len(candle) >= 6:
+            return {
+                "timestamp": candle[0],
+                "open": candle[1],
+                "high": candle[2],
+                "low": candle[3],
+                "close": candle[4],
+                "volume": candle[5],
+            }
+
+    return None
+
+
+def get_candle_direction(candle):
+    """
+    Determine candle direction from Open and Close.
+    """
+
+    candle = candle_to_dict(candle)
+
+    if not candle:
+        return "⚪ خنثی"
+
+    try:
+        open_price = float(candle["open"])
+        close_price = float(candle["close"])
+
+        if close_price > open_price:
+            return "🟢 صعودی"
+
+        if close_price < open_price:
+            return "🔴 نزولی"
+
+        return "⚪ خنثی"
+
+    except Exception:
+        return "⚪ نامشخص"
+
+
+def calculate_candle_pressure(candle):
+    """
+    Estimate buying/selling pressure using candle structure.
+
+    Factors:
+    - Body direction
+    - Body size
+    - Upper wick
+    - Lower wick
+    - Close position inside the candle range
+
+    Returns:
+        {
+            "buy": float,
+            "sell": float
+        }
+    """
+
+    candle = candle_to_dict(candle)
+
+    if not candle:
+        return {
+            "buy": 50.0,
+            "sell": 50.0,
+        }
+
+    try:
+        open_price = float(candle["open"])
+        high_price = float(candle["high"])
+        low_price = float(candle["low"])
+        close_price = float(candle["close"])
+
+        candle_range = high_price - low_price
+
+        if candle_range <= 0:
+            if close_price > open_price:
+                return {
+                    "buy": 100.0,
+                    "sell": 0.0,
+                }
+
+            if close_price < open_price:
+                return {
+                    "buy": 0.0,
+                    "sell": 100.0,
+                }
+
+            return {
+                "buy": 50.0,
+                "sell": 50.0,
+            }
+
+        body = close_price - open_price
+
+        upper_wick = (
+            high_price
+            - max(open_price, close_price)
+        )
+
+        lower_wick = (
+            min(open_price, close_price)
+            - low_price
+        )
+
+        close_position = (
+            (close_price - low_price)
+            / candle_range
+        )
+
+        close_position = max(
+            0.0,
+            min(
+                1.0,
+                close_position,
+            ),
+        )
+
+        body_factor = (
+            body / candle_range
+        )
+
+        wick_factor = (
+            (lower_wick - upper_wick)
+            / candle_range
+        )
+
+        pressure_score = (
+            50.0
+            + (body_factor * 35.0)
+            + (wick_factor * 15.0)
+            + ((close_position - 0.5) * 20.0)
+        )
+
+        buy_pressure = max(
+            0.0,
+            min(
+                100.0,
+                pressure_score,
+            ),
+        )
+
+        sell_pressure = (
+            100.0 - buy_pressure
+        )
+
+        return {
+            "buy": round(
+                buy_pressure,
+                1,
+            ),
+            "sell": round(
+                sell_pressure,
+                1,
+            ),
+        }
+
+    except Exception:
+        return {
+            "buy": 50.0,
+            "sell": 50.0,
+        }
+
+
+def format_candle_number(value):
+    try:
+        return f"{float(value):,.0f}"
+
+    except Exception:
+        return "—"
+
+
+def format_candle_row(
+    candle,
+    index,
+):
+    candle = candle_to_dict(candle)
+
+    if not candle:
+        return ""
+
+    direction = get_candle_direction(
+        candle
+    )
+
+    pressure = calculate_candle_pressure(
+        candle
+    )
+
+    timestamp = candle.get(
+        "timestamp",
+        "—",
+    )
+
+    open_price = candle.get("open")
+    high_price = candle.get("high")
+    low_price = candle.get("low")
+    close_price = candle.get("close")
+
+    return (
+        f"{index}. {timestamp}\n"
+        f"   {direction} | "
+        f"O {format_candle_number(open_price)} | "
+        f"H {format_candle_number(high_price)}\n"
+        f"   L {format_candle_number(low_price)} | "
+        f"C {format_candle_number(close_price)}\n"
+        f"   🟢 خرید: {pressure['buy']:.1f}% | "
+        f"🔴 فروش: {pressure['sell']:.1f}%"
+    )
+
+
+# ============================================================
+# CANDLE MENU
+# ============================================================
+
+def get_candle_keyboard():
+    keyboard = [
+        [
+            KeyboardButton("🕯️ 1m"),
+            KeyboardButton("🕯️ 5m"),
+        ],
+        [
+            KeyboardButton("🕯️ 15m"),
+            KeyboardButton("🕯️ 1h"),
+        ],
+        [
+            KeyboardButton("📥 خروجی Excel"),
+        ],
+        [
+            KeyboardButton("🔙 منوی اصلی"),
+        ],
+    ]
+
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+    )
+
+
+async def show_candle_menu(
+    update: Update,
+):
+    await update.message.reply_text(
+        "🕯️ بخش کندل‌ها\n\n"
+        "تایم‌فریم موردنظر را انتخاب کنید.\n\n"
+        "هر تایم‌فریم شامل:\n"
+        "• آخرین کندل\n"
+        "• وضعیت صعودی/نزولی\n"
+        "• فشار خرید و فروش\n"
+        "• ۲۰ کندل آخر\n\n"
+        "برای دریافت همه کندل‌ها به صورت فایل، "
+        "گزینه «📥 خروجی Excel» را انتخاب کنید.",
+        reply_markup=get_candle_keyboard(),
+    )
+
+
+# ============================================================
+# SHOW CANDLE TIMEFRAME
+# ============================================================
+
+async def show_candle_timeframe(
+    update: Update,
+    timeframe,
+):
+    try:
+        candles = get_recent_candles(
+            timeframe=timeframe,
+            limit=CANDLE_DISPLAY_LIMIT,
+        )
+
+        if not candles:
+            await update.message.reply_text(
+                f"🕯️ کندل {timeframe}\n\n"
+                "⚠️ هنوز کندلی برای این تایم‌فریم "
+                "در دیتابیس وجود ندارد.",
+                reply_markup=get_candle_keyboard(),
+            )
+
+            return
+
+        latest = candle_to_dict(
+            candles[0]
+        )
+
+        if not latest:
+            await update.message.reply_text(
+                "❌ ساختار اطلاعات کندل قابل شناسایی نیست.",
+                reply_markup=get_candle_keyboard(),
+            )
+
+            return
+
+        direction = get_candle_direction(
+            latest
+        )
+
+        pressure = calculate_candle_pressure(
+            latest
+        )
+
+        open_price = latest.get("open")
+        high_price = latest.get("high")
+        low_price = latest.get("low")
+        close_price = latest.get("close")
+
+        try:
+            change = (
+                float(close_price)
+                - float(open_price)
+            )
+
+            change_percent = (
+                (
+                    change
+                    / float(open_price)
+                )
+                * 100
+                if float(open_price) != 0
+                else 0
+            )
+
+        except Exception:
+            change = 0
+            change_percent = 0
+
+        message_lines = [
+            f"🕯️ کندل {timeframe}",
+            "",
+            "━━━━━━━━━━━━━━━━",
+            "📌 آخرین کندل",
+            "━━━━━━━━━━━━━━━━",
+            "",
+            f"🕐 زمان: {latest.get('timestamp', '—')}",
+            "",
+            f"📍 وضعیت: {direction}",
+            "",
+            f"Open:  {format_candle_number(open_price)} تومان",
+            f"High:  {format_candle_number(high_price)} تومان",
+            f"Low:   {format_candle_number(low_price)} تومان",
+            f"Close: {format_candle_number(close_price)} تومان",
+            "",
+        ]
+
+        if change > 0:
+            message_lines.append(
+                f"📈 تغییر: +{change:,.0f} تومان "
+                f"(+{change_percent:.3f}%)"
+            )
+
+        elif change < 0:
+            message_lines.append(
+                f"📉 تغییر: {change:,.0f} تومان "
+                f"({change_percent:.3f}%)"
+            )
+
+        else:
+            message_lines.append(
+                "➡️ تغییر: 0 تومان (0.000%)"
+            )
+
+        message_lines.extend([
+            "",
+            "⚖️ فشار بازار",
+            f"🟢 فشار خرید: {pressure['buy']:.1f}%",
+            f"🔴 فشار فروش: {pressure['sell']:.1f}%",
+            "",
+            "━━━━━━━━━━━━━━━━",
+            f"📋 ۲۰ کندل آخر {timeframe}",
+            "━━━━━━━━━━━━━━━━",
+            "",
+        ])
+
+        for index, candle in enumerate(
+            candles[:CANDLE_DISPLAY_LIMIT],
+            start=1,
+        ):
+            row_text = format_candle_row(
+                candle,
+                index,
+            )
+
+            if row_text:
+                message_lines.append(
+                    row_text
+                )
+
+                message_lines.append(
+                    "────────────"
+                )
+
+        # Telegram message limit protection.
+        message = "\n".join(
+            message_lines
+        )
+
+        if len(message) > 3900:
+            message = (
+                message[:3900]
+                + "\n\n⚠️ ادامه لیست به دلیل محدودیت پیام حذف شد."
+            )
+
+        await update.message.reply_text(
+            message,
+            reply_markup=get_candle_keyboard(),
+        )
+
+    except Exception as error:
+        print(
+            f"❌ CANDLE {timeframe} ERROR:",
+            error,
+            flush=True,
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            f"❌ خطا در دریافت کندل {timeframe}.",
+            reply_markup=get_candle_keyboard(),
+        )
+
+
+# ============================================================
+# EXCEL EXPORT
+# ============================================================
+
+def build_candles_excel():
+    """
+    Build Excel workbook containing all available candles.
+
+    Sheets:
+        1m
+        5m
+        15m
+        1h
+    """
+
+    workbook = Workbook()
+
+    # Remove default sheet.
+    default_sheet = workbook.active
+
+    workbook.remove(
+        default_sheet
+    )
+
+    for timeframe in CANDLE_TIMEFRAMES:
+
+        candles = get_recent_candles(
+            timeframe=timeframe,
+            limit=CANDLE_EXPORT_LIMIT,
+        )
+
+        worksheet = workbook.create_sheet(
+            title=timeframe
+        )
+
+        headers = [
+            "Timeframe",
+            "Timestamp",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "Direction",
+            "Change",
+            "Change %",
+            "Buy Pressure %",
+            "Sell Pressure %",
+        ]
+
+        worksheet.append(
+            headers
+        )
+
+        for candle in reversed(candles):
+            candle = candle_to_dict(
+                candle
+            )
+
+            if not candle:
+                continue
+
+            try:
+                open_price = float(
+                    candle["open"]
+                )
+
+                high_price = float(
+                    candle["high"]
+                )
+
+                low_price = float(
+                    candle["low"]
+                )
+
+                close_price = float(
+                    candle["close"]
+                )
+
+            except Exception:
+                continue
+
+            direction = get_candle_direction(
+                candle
+            )
+
+            pressure = calculate_candle_pressure(
+                candle
+            )
+
+            change = (
+                close_price
+                - open_price
+            )
+
+            if open_price != 0:
+                change_percent = (
+                    change
+                    / open_price
+                    * 100
+                )
+
+            else:
+                change_percent = 0
+
+            worksheet.append([
+                timeframe,
+                candle.get(
+                    "timestamp"
+                ),
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                candle.get(
+                    "volume",
+                    0,
+                ),
+                direction,
+                change,
+                change_percent,
+                pressure["buy"],
+                pressure["sell"],
+            ])
+
+        # Freeze header.
+        worksheet.freeze_panes = "A2"
+
+        # Auto filter.
+        worksheet.auto_filter.ref = (
+            worksheet.dimensions
+        )
+
+        # Column widths.
+        widths = {
+            "A": 12,
+            "B": 28,
+            "C": 18,
+            "D": 18,
+            "E": 18,
+            "F": 18,
+            "G": 12,
+            "H": 16,
+            "I": 18,
+            "J": 14,
+            "K": 18,
+            "L": 18,
+        }
+
+        for column, width in widths.items():
+            worksheet.column_dimensions[
+                column
+            ].width = width
+
+    output = BytesIO()
+
+    workbook.save(
+        output
+    )
+
+    output.seek(0)
+
+    return output
+
+
+async def export_candles_excel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    try:
+        await update.message.reply_text(
+            "📊 در حال آماده‌سازی فایل Excel...\n\n"
+            "لطفاً چند ثانیه صبر کنید."
+        )
+
+        excel_file = build_candles_excel()
+
+        filename = (
+            "Iran_Gold_AI_Candles_"
+            + datetime.now(
+                timezone.utc
+            ).strftime(
+                "%Y%m%d_%H%M%S"
+            )
+            + ".xlsx"
+        )
+
+        await update.message.reply_document(
+            document=excel_file,
+            filename=filename,
+            caption=(
+                "📥 خروجی کامل کندل‌های "
+                "Iran Gold AI\n\n"
+                "شامل تایم‌فریم‌های:\n"
+                "• 1m\n"
+                "• 5m\n"
+                "• 15m\n"
+                "• 1h\n\n"
+                "📊 شامل OHLC، جهت کندل، "
+                "تغییر قیمت و فشار خرید/فروش."
+            ),
+        )
+
+        await update.message.reply_text(
+            "🕯️ برای مشاهده کندل‌ها:",
+            reply_markup=get_candle_keyboard(),
+        )
+
+    except Exception as error:
+        print(
+            "❌ CANDLE EXCEL EXPORT ERROR:",
+            error,
+            flush=True,
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            "❌ خطا در ساخت فایل Excel.\n\n"
+            f"جزئیات: {error}",
+            reply_markup=get_candle_keyboard(),
+        )
+
+
+# ============================================================
 # PRICE HELPERS
 # ============================================================
 
 def get_tgju_toman(data):
     if not isinstance(data, dict):
-        raise ValueError("TGJU response is not a dictionary.")
+        raise ValueError(
+            "TGJU response is not a dictionary."
+        )
 
     if data.get("price_toman") is not None:
-        return float(data["price_toman"])
+        return float(
+            data["price_toman"]
+        )
 
     if data.get("price") is None:
-        raise ValueError("TGJU price not found.")
+        raise ValueError(
+            "TGJU price not found."
+        )
 
-    price = float(data["price"])
+    price = float(
+        data["price"]
+    )
 
     currency = str(
         data.get(
@@ -251,7 +942,10 @@ def get_tgju_toman(data):
     return price
 
 
-def extract_source_timestamp(data, fallback=None):
+def extract_source_timestamp(
+    data,
+    fallback=None,
+):
     if not isinstance(data, dict):
         return fallback
 
@@ -280,20 +974,28 @@ def find_latest_history_value(
         return None, None
 
     for row in history:
-        item = snapshot_to_dict(row)
+        item = snapshot_to_dict(
+            row
+        )
 
         if not item:
             continue
 
-        value = item.get(value_key)
+        value = item.get(
+            value_key
+        )
 
         if value is None:
             continue
 
         timestamp = (
-            item.get(timestamp_key)
+            item.get(
+                timestamp_key
+            )
             if timestamp_key
-            else item.get("timestamp")
+            else item.get(
+                "timestamp"
+            )
         )
 
         return value, timestamp
@@ -376,7 +1078,9 @@ def get_live_price_sources():
     try:
         data = get_gold_18k()
 
-        price = get_tgju_toman(data)
+        price = get_tgju_toman(
+            data
+        )
 
         timestamp = extract_source_timestamp(
             data,
@@ -438,7 +1142,9 @@ def get_live_price_sources():
     try:
         data = get_world_gold()
 
-        price = float(data["price_usd"])
+        price = float(
+            data["price_usd"]
+        )
 
         timestamp = extract_source_timestamp(
             data,
@@ -609,7 +1315,9 @@ def get_live_price_sources():
 
         data = get_servix_gold()
 
-        price = float(data["price_toman"])
+        price = float(
+            data["price_toman"]
+        )
 
         timestamp = extract_source_timestamp(
             data,
@@ -1227,7 +1935,9 @@ def get_main_keyboard(admin=False):
     if admin:
         keyboard.append(
             [
-                KeyboardButton("🖥 وضعیت سیستم")
+                KeyboardButton(
+                    "🖥 وضعیت سیستم"
+                )
             ]
         )
 
@@ -1359,7 +2069,9 @@ async def history_command(
             analyses,
             start=1,
         ):
-            item = analysis_to_dict(item)
+            item = analysis_to_dict(
+                item
+            )
 
             if not item:
                 continue
@@ -1437,62 +2149,9 @@ async def candle_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    try:
-        messages = []
-
-        for timeframe in (
-            "5m",
-            "15m",
-            "1h",
-        ):
-            candles = get_recent_candles(
-                timeframe=timeframe,
-                limit=1,
-            )
-
-            if not candles:
-                messages.append(
-                    f"🕯️ {timeframe}: "
-                    "هنوز کندلی وجود ندارد."
-                )
-
-                continue
-
-            candle = candles[0]
-
-            if isinstance(candle, tuple):
-                candle = dict(candle)
-
-            open_price = candle.get("open")
-            high_price = candle.get("high")
-            low_price = candle.get("low")
-            close_price = candle.get("close")
-
-            messages.append(
-                f"🕯️ کندل {timeframe}\n"
-                f"   O: {float(open_price):,.0f}\n"
-                f"   H: {float(high_price):,.0f}\n"
-                f"   L: {float(low_price):,.0f}\n"
-                f"   C: {float(close_price):,.0f}"
-            )
-
-        await update.message.reply_text(
-            "📈 آخرین کندل‌ها\n\n"
-            + "\n\n".join(messages)
-        )
-
-    except Exception as error:
-        print(
-            "❌ CANDLE COMMAND ERROR:",
-            error,
-            flush=True,
-        )
-
-        traceback.print_exc()
-
-        await update.message.reply_text(
-            "❌ خطا در دریافت کندل‌ها."
-        )
+    await show_candle_menu(
+        update
+    )
 
 
 # ============================================================
@@ -1610,26 +2269,91 @@ async def text_handler(
 
     text = update.message.text
 
+    # --------------------------------------------------------
+    # MAIN MENU
+    # --------------------------------------------------------
+
     if text == "🟡 قیمت لحظه‌ای":
-        await price_command(update, context)
+        await price_command(
+            update,
+            context,
+        )
 
     elif text == "📊 تاریخچه":
-        await history_command(update, context)
+        await history_command(
+            update,
+            context,
+        )
 
     elif text == "📈 کندل‌ها":
-        await candle_command(update, context)
+        await candle_command(
+            update,
+            context,
+        )
 
     elif text == "🧠 تحلیل":
-        await analysis_command(update, context)
+        await analysis_command(
+            update,
+            context,
+        )
 
     elif text == "🧪 تست منابع":
-        await source_test_command(update, context)
+        await source_test_command(
+            update,
+            context,
+        )
 
     elif text == "🖥 وضعیت سیستم":
-        await system_status_command(update, context)
+        await system_status_command(
+            update,
+            context,
+        )
 
     elif text == "ℹ️ درباره":
-        await about_command(update, context)
+        await about_command(
+            update,
+            context,
+        )
+
+    # --------------------------------------------------------
+    # CANDLE MENU
+    # --------------------------------------------------------
+
+    elif text == "🕯️ 1m":
+        await show_candle_timeframe(
+            update,
+            "1m",
+        )
+
+    elif text == "🕯️ 5m":
+        await show_candle_timeframe(
+            update,
+            "5m",
+        )
+
+    elif text == "🕯️ 15m":
+        await show_candle_timeframe(
+            update,
+            "15m",
+        )
+
+    elif text == "🕯️ 1h":
+        await show_candle_timeframe(
+            update,
+            "1h",
+        )
+
+    elif text == "📥 خروجی Excel":
+        await export_candles_excel(
+            update,
+            context,
+        )
+
+    elif text == "🔙 منوی اصلی":
+        await start_command(
+            update,
+            context,
+        )
 
     else:
         await update.message.reply_text(
@@ -1880,4 +2604,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-#gooz
