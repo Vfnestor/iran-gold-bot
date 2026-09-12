@@ -1,6 +1,5 @@
 python-telegram-bot==22.5
 python-dotenv==1.1.1
-requests==1.1.1
 requests
 beautifulsoup4
 openpyxl
