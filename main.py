@@ -2,6 +2,7 @@ import os
 import threading
 import traceback
 import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -29,6 +30,7 @@ from data.collectors.usd_toman import get_usd_toman
 from database import (
     init_db,
     get_latest_market_snapshot,
+    get_market_history,
     get_analysis_history,
     get_latest_analysis,
     get_database_stats,
@@ -201,7 +203,41 @@ def analysis_to_dict(row):
 
 
 # ============================================================
-# TGJU PRICE NORMALIZER
+# TIME HELPERS
+# ============================================================
+
+def current_timestamp():
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def format_timestamp(timestamp):
+
+    if not timestamp:
+        return "زمان نامشخص"
+
+    try:
+
+        dt = datetime.fromisoformat(
+            str(timestamp).replace(
+                "Z",
+                "+00:00"
+            )
+        )
+
+        return dt.strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+
+    except Exception:
+
+        return str(timestamp)
+
+
+# ============================================================
+# PRICE HELPERS
 # ============================================================
 
 def get_tgju_toman(data):
@@ -237,6 +273,485 @@ def get_tgju_toman(data):
         return price / 10
 
     return price
+
+
+def extract_source_timestamp(
+    data,
+    fallback=None
+):
+
+    if not isinstance(data, dict):
+        return fallback
+
+    for key in (
+        "timestamp",
+        "time",
+        "datetime",
+        "date",
+        "updated_at",
+        "created_at",
+    ):
+
+        value = data.get(key)
+
+        if value:
+            return value
+
+    return fallback
+
+
+def find_latest_history_value(
+    history,
+    value_key,
+    timestamp_key=None
+):
+
+    if not history:
+        return None, None
+
+    for row in history:
+
+        item = snapshot_to_dict(row)
+
+        if not item:
+            continue
+
+        value = item.get(
+            value_key
+        )
+
+        if value is None:
+            continue
+
+        timestamp = (
+            item.get(timestamp_key)
+            if timestamp_key
+            else item.get("timestamp")
+        )
+
+        return value, timestamp
+
+    return None, None
+
+
+def get_latest_saved_source_data():
+
+    try:
+
+        history = get_market_history(
+            limit=100
+        )
+
+        if not history:
+            return {}
+
+        data = {}
+
+        data["tgju"] = (
+            find_latest_history_value(
+                history,
+                "gold_18k_toman",
+                "tgju_timestamp"
+            )
+        )
+
+        data["world"] = (
+            find_latest_history_value(
+                history,
+                "world_gold_usd",
+                "world_gold_timestamp"
+            )
+        )
+
+        data["usd_mid"] = (
+            find_latest_history_value(
+                history,
+                "usd_mid_toman",
+                "usd_timestamp"
+            )
+        )
+
+        data["usd_buy"] = (
+            find_latest_history_value(
+                history,
+                "usd_buy_toman",
+                "usd_timestamp"
+            )
+        )
+
+        data["usd_sell"] = (
+            find_latest_history_value(
+                history,
+                "usd_sell_toman",
+                "usd_timestamp"
+            )
+        )
+
+        data["servix"] = (
+            find_latest_history_value(
+                history,
+                "servix_gold_18k_toman",
+                "servix_timestamp"
+            )
+        )
+
+        return data
+
+    except Exception as error:
+
+        print(
+            "⚠️ Could not read source history:",
+            error,
+            flush=True
+        )
+
+        return {}
+
+
+# ============================================================
+# LIVE PRICE COLLECTION FOR PRICE BUTTON
+# ============================================================
+
+def get_live_price_sources():
+
+    saved = get_latest_saved_source_data()
+
+    results = []
+
+    # ========================================================
+    # TGJU
+    # ========================================================
+
+    try:
+
+        data = get_gold_18k()
+
+        price = get_tgju_toman(
+            data
+        )
+
+        timestamp = extract_source_timestamp(
+            data,
+            current_timestamp()
+        )
+
+        results.append({
+            "name": "TGJU",
+            "icon": "🟢",
+            "ok": True,
+            "price": price,
+            "timestamp": timestamp,
+            "text": (
+                f"💰 {price:,.0f} تومان\n"
+                f"   🕐 {format_timestamp(timestamp)}"
+            ),
+        })
+
+    except Exception as error:
+
+        print(
+            f"❌ PRICE TGJU FAILED: {error}",
+            flush=True
+        )
+
+        price, timestamp = saved.get(
+            "tgju",
+            (None, None)
+        )
+
+        if price is not None:
+
+            results.append({
+                "name": "TGJU",
+                "icon": "🔴",
+                "ok": False,
+                "price": price,
+                "timestamp": timestamp,
+                "text": (
+                    f"💰 آخرین قیمت: "
+                    f"{float(price):,.0f} تومان\n"
+                    f"   🕐 {format_timestamp(timestamp)}\n"
+                    f"   ⚠️ پاسخ جدید دریافت نشد"
+                ),
+            })
+
+        else:
+
+            results.append({
+                "name": "TGJU",
+                "icon": "🔴",
+                "ok": False,
+                "price": None,
+                "timestamp": None,
+                "text": (
+                    "⚠️ قیمت ذخیره‌شده‌ای وجود ندارد"
+                ),
+            })
+
+    # ========================================================
+    # WORLD GOLD
+    # ========================================================
+
+    try:
+
+        data = get_world_gold()
+
+        price = float(
+            data["price_usd"]
+        )
+
+        timestamp = extract_source_timestamp(
+            data,
+            current_timestamp()
+        )
+
+        results.append({
+            "name": "World Gold",
+            "icon": "🟢",
+            "ok": True,
+            "price": price,
+            "timestamp": timestamp,
+            "text": (
+                f"🌎 ${price:,.2f} / oz\n"
+                f"   🕐 {format_timestamp(timestamp)}"
+            ),
+        })
+
+    except Exception as error:
+
+        print(
+            f"❌ PRICE WORLD GOLD FAILED: {error}",
+            flush=True
+        )
+
+        price, timestamp = saved.get(
+            "world",
+            (None, None)
+        )
+
+        if price is not None:
+
+            results.append({
+                "name": "World Gold",
+                "icon": "🔴",
+                "ok": False,
+                "price": price,
+                "timestamp": timestamp,
+                "text": (
+                    f"🌎 آخرین قیمت: "
+                    f"${float(price):,.2f} / oz\n"
+                    f"   🕐 {format_timestamp(timestamp)}\n"
+                    f"   ⚠️ پاسخ جدید دریافت نشد"
+                ),
+            })
+
+        else:
+
+            results.append({
+                "name": "World Gold",
+                "icon": "🔴",
+                "ok": False,
+                "price": None,
+                "timestamp": None,
+                "text": (
+                    "⚠️ قیمت ذخیره‌شده‌ای وجود ندارد"
+                ),
+            })
+
+    # ========================================================
+    # USD / TOMAN
+    # ========================================================
+
+    try:
+
+        data = get_usd_toman()
+
+        usd_mid = float(
+            data.get(
+                "mid",
+                data.get(
+                    "mid_toman"
+                )
+            )
+        )
+
+        usd_buy = float(
+            data.get(
+                "buy",
+                data.get(
+                    "buy_toman"
+                )
+            )
+        )
+
+        usd_sell = float(
+            data.get(
+                "sell",
+                data.get(
+                    "sell_toman"
+                )
+            )
+        )
+
+        timestamp = extract_source_timestamp(
+            data,
+            current_timestamp()
+        )
+
+        results.append({
+            "name": "NetArz",
+            "icon": "🟢",
+            "ok": True,
+            "price": usd_mid,
+            "timestamp": timestamp,
+            "text": (
+                f"💵 میانگین: {usd_mid:,.0f} تومان\n"
+                f"   خرید: {usd_buy:,.0f} تومان\n"
+                f"   فروش: {usd_sell:,.0f} تومان\n"
+                f"   🕐 {format_timestamp(timestamp)}"
+            ),
+        })
+
+    except Exception as error:
+
+        print(
+            f"❌ PRICE USD/TOMAN FAILED: {error}",
+            flush=True
+        )
+
+        mid, timestamp = saved.get(
+            "usd_mid",
+            (None, None)
+        )
+
+        buy, _ = saved.get(
+            "usd_buy",
+            (None, None)
+        )
+
+        sell, _ = saved.get(
+            "usd_sell",
+            (None, None)
+        )
+
+        if mid is not None:
+
+            buy_text = (
+                f"{float(buy):,.0f}"
+                if buy is not None
+                else "—"
+            )
+
+            sell_text = (
+                f"{float(sell):,.0f}"
+                if sell is not None
+                else "—"
+            )
+
+            results.append({
+                "name": "NetArz",
+                "icon": "🔴",
+                "ok": False,
+                "price": mid,
+                "timestamp": timestamp,
+                "text": (
+                    f"💵 آخرین میانگین: "
+                    f"{float(mid):,.0f} تومان\n"
+                    f"   خرید: {buy_text} تومان\n"
+                    f"   فروش: {sell_text} تومان\n"
+                    f"   🕐 {format_timestamp(timestamp)}\n"
+                    f"   ⚠️ پاسخ جدید دریافت نشد"
+                ),
+            })
+
+        else:
+
+            results.append({
+                "name": "NetArz",
+                "icon": "🔴",
+                "ok": False,
+                "price": None,
+                "timestamp": None,
+                "text": (
+                    "⚠️ قیمت ذخیره‌شده‌ای وجود ندارد"
+                ),
+            })
+
+    # ========================================================
+    # SERVIX
+    # ========================================================
+
+    try:
+
+        from data.collectors.servix import (
+            get_servix_gold
+        )
+
+        data = get_servix_gold()
+
+        price = float(
+            data["price_toman"]
+        )
+
+        timestamp = extract_source_timestamp(
+            data,
+            current_timestamp()
+        )
+
+        results.append({
+            "name": "Servix",
+            "icon": "🟢",
+            "ok": True,
+            "price": price,
+            "timestamp": timestamp,
+            "text": (
+                f"💰 {price:,.0f} تومان\n"
+                f"   🕐 {format_timestamp(timestamp)}"
+            ),
+        })
+
+    except Exception as error:
+
+        print(
+            f"❌ PRICE SERVIX FAILED: {error}",
+            flush=True
+        )
+
+        price, timestamp = saved.get(
+            "servix",
+            (None, None)
+        )
+
+        if price is not None:
+
+            results.append({
+                "name": "Servix",
+                "icon": "🔴",
+                "ok": False,
+                "price": price,
+                "timestamp": timestamp,
+                "text": (
+                    f"💰 آخرین قیمت: "
+                    f"{float(price):,.0f} تومان\n"
+                    f"   🕐 {format_timestamp(timestamp)}\n"
+                    f"   ⚠️ پاسخ جدید دریافت نشد"
+                ),
+            })
+
+        else:
+
+            results.append({
+                "name": "Servix",
+                "icon": "🔴",
+                "ok": False,
+                "price": None,
+                "timestamp": None,
+                "text": (
+                    "⚠️ قیمت ذخیره‌شده‌ای وجود ندارد"
+                ),
+            })
+
+    return results
 
 
 # ============================================================
@@ -543,10 +1058,6 @@ async def system_status_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    # --------------------------------------------------------
-    # SECURITY CHECK
-    # --------------------------------------------------------
-
     if not is_admin(update):
 
         await update.message.reply_text(
@@ -587,10 +1098,6 @@ async def system_status_command(
             limit=1
         )
 
-        # ----------------------------------------------------
-        # COUNTS
-        # ----------------------------------------------------
-
         total_snapshots = stats.get(
             "total_market_snapshots",
             0
@@ -611,22 +1118,12 @@ async def system_status_command(
             0
         )
 
-        # ----------------------------------------------------
-        # SOURCE STATUS
-        # ----------------------------------------------------
-
         source_counts = stats.get(
             "source_counts",
             {}
         )
 
-        # Prevent unused-variable issues while keeping
-        # source statistics available for future dashboard use.
         _ = source_counts
-
-        # ----------------------------------------------------
-        # LATEST SNAPSHOT
-        # ----------------------------------------------------
 
         if latest_snapshot:
 
@@ -654,12 +1151,7 @@ async def system_status_command(
         else:
 
             latest_price_text = "هنوز وجود ندارد"
-
             latest_snapshot_time = "—"
-
-        # ----------------------------------------------------
-        # LATEST ANALYSIS
-        # ----------------------------------------------------
 
         if latest_analysis:
 
@@ -699,10 +1191,6 @@ async def system_status_command(
             latest_trend = "—"
             latest_confidence_text = "—"
 
-        # ----------------------------------------------------
-        # CANDLE STATUS
-        # ----------------------------------------------------
-
         candle_5m_status = (
             "🟢 فعال"
             if candles_5m
@@ -721,10 +1209,6 @@ async def system_status_command(
             else "🟡 در انتظار داده"
         )
 
-        # ----------------------------------------------------
-        # ANALYSIS PROGRESS
-        # ----------------------------------------------------
-
         analysis_target = 25
 
         if total_candles >= analysis_target:
@@ -740,10 +1224,6 @@ async def system_status_command(
                 f"🟡 {total_candles}/{analysis_target} "
                 "کندل"
             )
-
-        # ----------------------------------------------------
-        # SYSTEM STATUS MESSAGE
-        # ----------------------------------------------------
 
         lines = [
             "🖥 وضعیت سیستم Iran Gold AI",
@@ -912,10 +1392,6 @@ def get_main_keyboard(
         ],
     ]
 
-    # --------------------------------------------------------
-    # ADMIN ONLY BUTTON
-    # --------------------------------------------------------
-
     if admin:
 
         keyboard.append(
@@ -964,52 +1440,55 @@ async def price_command(
 
     try:
 
-        snapshot = snapshot_to_dict(
-            get_latest_market_snapshot()
+        await update.message.reply_text(
+            "🟡 در حال دریافت آخرین وضعیت منابع...\n\n"
+            "لطفاً چند ثانیه صبر کنید."
         )
 
-        if snapshot:
+        results = get_live_price_sources()
 
-            price = snapshot.get(
-                "gold_18k_toman"
+        lines = [
+            "🟡 قیمت لحظه‌ای بازار",
+            "",
+            "━━━━━━━━━━━━━━━━",
+        ]
+
+        online_count = 0
+
+        for result in results:
+
+            if result["ok"]:
+
+                online_count += 1
+
+            lines.append(
+                f"{result['icon']} {result['name']}"
             )
 
-            timestamp = snapshot.get(
-                "timestamp",
-                ""
+            lines.append(
+                f"   {result['text']}"
             )
 
-            if price is not None:
+            lines.append(
+                "━━━━━━━━━━━━━━━━"
+            )
 
-                await update.message.reply_text(
-                    "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
-                    f"💰 قیمت: "
-                    f"{float(price):,.0f} تومان\n"
-                    "📡 منبع: TGJU\n"
-                    f"🕐 زمان: {timestamp}"
-                )
-
-                return
-
-        # ----------------------------------------------------
-        # FALLBACK
-        # ----------------------------------------------------
-
-        data = get_gold_18k()
-
-        price = get_tgju_toman(
-            data
+        lines.append(
+            f"📊 وضعیت منابع: "
+            f"{online_count}/{len(results)} پاسخ فعال"
         )
 
-        source = data.get(
-            "source",
-            "TGJU"
+        lines.append(
+            ""
+        )
+
+        lines.append(
+            "ℹ️ قیمت قرمز یعنی منبع در درخواست فعلی "
+            "پاسخ نداده و آخرین مقدار ذخیره‌شده نمایش داده شده است."
         )
 
         await update.message.reply_text(
-            "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
-            f"💰 قیمت: {price:,.0f} تومان\n"
-            f"📡 منبع: {source}"
+            "\n".join(lines)
         )
 
     except Exception as error:
@@ -1023,7 +1502,7 @@ async def price_command(
         traceback.print_exc()
 
         await update.message.reply_text(
-            "❌ خطا در دریافت قیمت."
+            "❌ خطا در دریافت قیمت منابع."
         )
 
 
@@ -1491,10 +1970,6 @@ def main():
         flush=True
     )
 
-    # --------------------------------------------------------
-    # BOT TOKEN
-    # --------------------------------------------------------
-
     bot_token = os.getenv(
         "BOT_TOKEN"
     )
@@ -1513,10 +1988,6 @@ def main():
         flush=True
     )
 
-    # --------------------------------------------------------
-    # ADMIN
-    # --------------------------------------------------------
-
     admin_id = get_admin_user_id()
 
     if admin_id:
@@ -1533,10 +2004,6 @@ def main():
             "Admin-only menu will be hidden.",
             flush=True
         )
-
-    # --------------------------------------------------------
-    # DATABASE
-    # --------------------------------------------------------
 
     try:
 
@@ -1559,18 +2026,10 @@ def main():
 
         return
 
-    # --------------------------------------------------------
-    # SERVIX STARTUP TEST DISABLED
-    # --------------------------------------------------------
-
     print(
         "ℹ️ SERVIX startup test disabled.",
         flush=True
     )
-
-    # --------------------------------------------------------
-    # HEALTH SERVER
-    # --------------------------------------------------------
 
     health_thread = threading.Thread(
         target=start_health_server,
@@ -1578,10 +2037,6 @@ def main():
     )
 
     health_thread.start()
-
-    # --------------------------------------------------------
-    # TELEGRAM APPLICATION
-    # --------------------------------------------------------
 
     try:
 
@@ -1623,10 +2078,6 @@ def main():
 
         return
 
-    # --------------------------------------------------------
-    # COLLECTOR
-    # --------------------------------------------------------
-
     collector_thread = threading.Thread(
         target=start_collector,
         daemon=True
@@ -1639,10 +2090,6 @@ def main():
         flush=True
     )
 
-    # --------------------------------------------------------
-    # ANALYSIS
-    # --------------------------------------------------------
-
     analysis_thread = threading.Thread(
         target=start_analysis_engine,
         daemon=True
@@ -1654,10 +2101,6 @@ def main():
         "🧠 Analysis thread started.",
         flush=True
     )
-
-    # --------------------------------------------------------
-    # TELEGRAM POLLING
-    # --------------------------------------------------------
 
     print(
         "📡 Starting Telegram polling...",
