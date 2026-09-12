@@ -2162,17 +2162,3 @@ ENTRY POINT
 if name == "main":
 
 main()
-
-
-**فقط همین `main.py` را جایگزین کن و Deploy بگیر.**
-
-بعد از Deploy، فعلاً هیچ فایل دیگری را تغییر نده. فقط لاگ‌های جدید را بفرست؛ مخصوصاً اگر یکی از این‌ها ظاهر شد:
-
-```text
-🧠 Professional Analysis completed:
-
-یا:
-
-❌ ANALYSIS ENGINE ERROR:
-
-اگر خطای "tuple" دوباره ظاهر شود، مرحله بعدی مستقیماً خود "analysis/analysis_engine.py" است.
