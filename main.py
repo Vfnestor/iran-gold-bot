@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from data.collector_service import run_collector
 from data.collectors.tgju import get_gold_18k
+from data.collectors.world_gold import get_world_gold
 
 from database import (
     init_db,
@@ -42,81 +43,271 @@ print("DEBUG 1: main.py started", flush=True)
 
 
 # ============================================================
-# SERVIX TEST
+# TGJU PRICE NORMALIZER
 # ============================================================
 
-def test_servix():
+def get_tgju_toman(data):
+    """
+    تبدیل قیمت TGJU به تومان.
 
-    print("🧪 SERVIX: starting test...", flush=True)
+    اگر collector از قبل price_toman داشته باشد،
+    همان مقدار استفاده می‌شود.
+
+    در غیر این صورت قیمت فعلی بررسی می‌شود.
+    """
+
+    if data.get("price_toman") is not None:
+        return float(data["price_toman"])
+
+    price = float(data["price"])
+
+    currency = str(
+        data.get("currency", "")
+    ).upper()
+
+    # TGJU geram18 معمولاً بر حسب ریال است.
+    if currency in ("IRR", "RLS", "RIAL", "ریال"):
+        return price / 10
+
+    # محافظ برای نسخه فعلی collector:
+    # قیمت ریالی طلای 18K معمولاً حدود 10 برابر
+    # قیمت تومانی است.
+    if price > 100_000_000:
+        return price / 10
+
+    return price
+
+
+# ============================================================
+# SOURCE TEST
+# ============================================================
+
+def test_all_sources():
+    """
+    تست سه منبع قیمت:
+
+    1. TGJU
+    2. Servix
+    3. World Gold API
+    """
+
+    results = []
+
+    # --------------------------------------------------------
+    # TGJU
+    # --------------------------------------------------------
 
     try:
 
-        from data.collectors.servix import get_servix_gold
-
         print(
-            "✅ SERVIX MODULE: imported successfully",
+            "🧪 TGJU: starting test...",
             flush=True
         )
 
-        servix_data = get_servix_gold()
+        tgju_data = get_gold_18k()
 
-        print(
-            "✅ SERVIX: API connection successful",
-            flush=True
+        tgju_price_toman = get_tgju_toman(
+            tgju_data
         )
 
-        print(
-            f"📡 SERVIX SOURCE: "
-            f"{servix_data['source']}",
-            flush=True
-        )
+        results.append({
+            "name": "TGJU",
+            "ok": True,
+            "message": (
+                f"💰 {tgju_price_toman:,.0f} تومان"
+            ),
+        })
 
         print(
-            f"🪙 SERVIX SYMBOL: "
-            f"{servix_data['symbol']}",
+            f"✅ TGJU: {tgju_price_toman:,.0f} تومان",
             flush=True
         )
-
-        print(
-            f"💰 SERVIX PRICE RIAL: "
-            f"{servix_data['price_riel']:,}",
-            flush=True
-        )
-
-        print(
-            f"💵 SERVIX PRICE TOMAN: "
-            f"{servix_data['price_toman']:,}",
-            flush=True
-        )
-
-        print(
-            f"🕐 SERVIX BUSINESS TIME: "
-            f"{servix_data['business_time']}",
-            flush=True
-        )
-
-        return True
 
     except Exception as error:
 
         print(
-            "❌ SERVIX TEST FAILED",
+            f"❌ TGJU TEST FAILED: {error}",
             flush=True
         )
 
+        results.append({
+            "name": "TGJU",
+            "ok": False,
+            "message": str(error),
+        })
+
+    # --------------------------------------------------------
+    # SERVIX
+    # --------------------------------------------------------
+
+    try:
+
         print(
-            f"Type: {type(error).__name__}",
+            "🧪 SERVIX: starting test...",
             flush=True
         )
 
+        from data.collectors.servix import (
+            get_servix_gold
+        )
+
+        servix_data = get_servix_gold()
+
+        servix_price_toman = float(
+            servix_data["price_toman"]
+        )
+
+        results.append({
+            "name": "Servix",
+            "ok": True,
+            "message": (
+                f"💰 {servix_price_toman:,.0f} تومان"
+            ),
+        })
+
         print(
-            f"Message: {error}",
+            f"✅ SERVIX: "
+            f"{servix_price_toman:,.0f} تومان",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            f"❌ SERVIX TEST FAILED: {error}",
+            flush=True
+        )
+
+        results.append({
+            "name": "Servix",
+            "ok": False,
+            "message": str(error),
+        })
+
+    # --------------------------------------------------------
+    # WORLD GOLD
+    # --------------------------------------------------------
+
+    try:
+
+        print(
+            "🧪 WORLD GOLD: starting test...",
+            flush=True
+        )
+
+        world_data = get_world_gold()
+
+        world_price = float(
+            world_data["price_usd"]
+        )
+
+        results.append({
+            "name": "World Gold",
+            "ok": True,
+            "message": (
+                f"🌎 ${world_price:,.2f} / oz"
+            ),
+        })
+
+        print(
+            f"✅ WORLD GOLD: "
+            f"${world_price:,.2f} / oz",
+            flush=True
+        )
+
+    except Exception as error:
+
+        print(
+            f"❌ WORLD GOLD TEST FAILED: {error}",
+            flush=True
+        )
+
+        results.append({
+            "name": "World Gold",
+            "ok": False,
+            "message": str(error),
+        })
+
+    return results
+
+
+# ============================================================
+# TELEGRAM SOURCE TEST COMMAND
+# ============================================================
+
+async def source_test_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🧪 در حال بررسی سه منبع قیمت...\n\n"
+        "لطفاً چند ثانیه صبر کنید."
+    )
+
+    try:
+
+        results = test_all_sources()
+
+        lines = [
+            "🧪 نتیجه تست منابع",
+            "",
+        ]
+
+        online_count = 0
+
+        for result in results:
+
+            if result["ok"]:
+
+                online_count += 1
+
+                lines.append(
+                    f"🟢 {result['name']}"
+                )
+
+                lines.append(
+                    f"   {result['message']}"
+                )
+
+            else:
+
+                lines.append(
+                    f"🔴 {result['name']}"
+                )
+
+                lines.append(
+                    f"   ⚠️ {result['message']}"
+                )
+
+            lines.append("")
+
+        lines.append(
+            "━━━━━━━━━━━━━━━━"
+        )
+
+        lines.append(
+            f"📊 وضعیت: "
+            f"{online_count}/{len(results)} منبع فعال"
+        )
+
+        await update.message.reply_text(
+            "\n".join(lines)
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ SOURCE TEST COMMAND ERROR:",
+            error,
             flush=True
         )
 
         traceback.print_exc()
 
-        return False
+        await update.message.reply_text(
+            "❌ خطا هنگام تست منابع."
+        )
 
 
 # ============================================================
@@ -192,6 +383,9 @@ async def start_command(
         ],
         [
             KeyboardButton("📈 کندل‌ها"),
+            KeyboardButton("🧪 تست منابع"),
+        ],
+        [
             KeyboardButton("ℹ️ درباره"),
         ],
     ]
@@ -221,18 +415,20 @@ async def price_command(
 
         data = get_gold_18k()
 
-        save_price(data)
+        price = get_tgju_toman(data)
 
-        price = data["price"]
+        # برای حفظ ساختار فعلی دیتابیس
+        # فعلاً همان data ذخیره می‌شود.
+        save_price(data)
 
         source = data.get(
             "source",
-            "unknown"
+            "TGJU"
         )
 
         message = (
             "🟡 قیمت لحظه‌ای طلای ۱۸ عیار\n\n"
-            f"💰 قیمت: {price:,} تومان\n"
+            f"💰 قیمت: {price:,.0f} تومان\n"
             f"📡 منبع: {source}"
         )
 
@@ -247,6 +443,8 @@ async def price_command(
             error,
             flush=True
         )
+
+        traceback.print_exc()
 
         await update.message.reply_text(
             "❌ خطا در دریافت قیمت."
@@ -373,7 +571,12 @@ async def about_command(
 
         "📡 منابع داده\n"
         "• TGJU\n"
-        "• Servix\n\n"
+        "• Servix\n"
+        "• World Gold API\n\n"
+
+        "🌎 داده جهانی\n"
+        "• XAU/USD\n"
+        "• قیمت هر اونس تروا\n\n"
 
         "🔄 داده‌ها به‌صورت دوره‌ای "
         "دریافت و بررسی می‌شوند.\n\n"
@@ -426,6 +629,13 @@ async def text_handler(
     elif text == "📈 کندل‌ها":
 
         await candle_command(
+            update,
+            context
+        )
+
+    elif text == "🧪 تست منابع":
+
+        await source_test_command(
             update,
             context
         )
@@ -538,24 +748,17 @@ def main():
         return
 
     # --------------------------------------------------------
-    # SERVIX TEST
+    # NOTE:
+    # Servix is NOT tested during startup.
+    #
+    # This prevents every Render restart/deploy from consuming
+    # one of the limited Servix requests.
     # --------------------------------------------------------
 
-    servix_ok = test_servix()
-
-    if servix_ok:
-
-        print(
-            "🟢 SERVIX STATUS: ONLINE",
-            flush=True
-        )
-
-    else:
-
-        print(
-            "🔴 SERVIX STATUS: OFFLINE",
-            flush=True
-        )
+    print(
+        "ℹ️ SERVIX startup test disabled.",
+        flush=True
+    )
 
     # --------------------------------------------------------
     # HEALTH SERVER
