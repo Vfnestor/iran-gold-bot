@@ -31,6 +31,7 @@ from database import (
     get_latest_market_snapshot,
     get_analysis_history,
     get_latest_analysis,
+    get_database_stats,
 )
 
 from candle_engine import (
@@ -60,6 +61,49 @@ print(
 # ============================================================
 
 ANALYSIS_INTERVAL = 5 * 60
+
+
+# ============================================================
+# ADMIN
+# ============================================================
+
+def get_admin_user_id():
+
+    value = os.getenv(
+        "ADMIN_USER_ID",
+        ""
+    ).strip()
+
+    if not value:
+        return None
+
+    try:
+        return int(value)
+
+    except ValueError:
+
+        print(
+            "⚠️ ADMIN_USER_ID is invalid.",
+            flush=True
+        )
+
+        return None
+
+
+def is_admin(update: Update):
+
+    admin_id = get_admin_user_id()
+
+    if admin_id is None:
+        return False
+
+    if not update.effective_user:
+        return False
+
+    return (
+        update.effective_user.id
+        == admin_id
+    )
 
 
 # ============================================================
@@ -397,6 +441,281 @@ async def source_test_command(
 
 
 # ============================================================
+# SYSTEM STATUS - ADMIN ONLY
+# ============================================================
+
+async def system_status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    # --------------------------------------------------------
+    # SECURITY CHECK
+    # --------------------------------------------------------
+
+    if not is_admin(update):
+
+        await update.message.reply_text(
+            "⛔ دسترسی غیرمجاز."
+        )
+
+        print(
+            "⚠️ Unauthorized system status access attempt.",
+            flush=True
+        )
+
+        return
+
+    try:
+
+        stats = get_database_stats()
+
+        latest_snapshot = (
+            get_latest_market_snapshot()
+        )
+
+        latest_analysis = (
+            get_latest_analysis()
+        )
+
+        candles_5m = get_recent_candles(
+            timeframe="5m",
+            limit=1
+        )
+
+        candles_15m = get_recent_candles(
+            timeframe="15m",
+            limit=1
+        )
+
+        candles_1h = get_recent_candles(
+            timeframe="1h",
+            limit=1
+        )
+
+        # ----------------------------------------------------
+        # COUNTS
+        # ----------------------------------------------------
+
+        total_snapshots = stats.get(
+            "total_market_snapshots",
+            0
+        )
+
+        total_analyses = stats.get(
+            "total_analyses",
+            0
+        )
+
+        total_prices = stats.get(
+            "total_prices",
+            0
+        )
+
+        total_candles = stats.get(
+            "total_candles",
+            0
+        )
+
+        # ----------------------------------------------------
+        # SOURCE STATUS
+        # ----------------------------------------------------
+
+        source_counts = stats.get(
+            "source_counts",
+            {}
+        )
+
+        # ----------------------------------------------------
+        # LATEST SNAPSHOT
+        # ----------------------------------------------------
+
+        if latest_snapshot:
+
+            latest_price = latest_snapshot.get(
+                "gold_18k_toman"
+            )
+
+            latest_snapshot_time = (
+                latest_snapshot.get(
+                    "timestamp",
+                    "نامشخص"
+                )
+            )
+
+            if latest_price is not None:
+
+                latest_price_text = (
+                    f"{float(latest_price):,.0f} تومان"
+                )
+
+            else:
+
+                latest_price_text = "نامشخص"
+
+        else:
+
+            latest_price_text = "هنوز وجود ندارد"
+
+            latest_snapshot_time = "—"
+
+        # ----------------------------------------------------
+        # LATEST ANALYSIS
+        # ----------------------------------------------------
+
+        if latest_analysis:
+
+            latest_signal = (
+                latest_analysis.get(
+                    "signal",
+                    "HOLD"
+                )
+            )
+
+            latest_trend = (
+                latest_analysis.get(
+                    "trend",
+                    "خنثی"
+                )
+            )
+
+            latest_confidence = (
+                latest_analysis.get(
+                    "confidence"
+                )
+            )
+
+            if latest_confidence is not None:
+
+                latest_confidence_text = (
+                    f"{float(latest_confidence):.0f}%"
+                )
+
+            else:
+
+                latest_confidence_text = "—"
+
+        else:
+
+            latest_signal = "هنوز وجود ندارد"
+            latest_trend = "—"
+            latest_confidence_text = "—"
+
+        # ----------------------------------------------------
+        # CANDLE STATUS
+        # ----------------------------------------------------
+
+        candle_5m_status = (
+            "🟢 فعال"
+            if candles_5m
+            else "🟡 در انتظار داده"
+        )
+
+        candle_15m_status = (
+            "🟢 فعال"
+            if candles_15m
+            else "🟡 در انتظار داده"
+        )
+
+        candle_1h_status = (
+            "🟢 فعال"
+            if candles_1h
+            else "🟡 در انتظار داده"
+        )
+
+        # ----------------------------------------------------
+        # ANALYSIS PROGRESS
+        # ----------------------------------------------------
+
+        analysis_target = 25
+
+        if total_candles >= analysis_target:
+
+            analysis_progress = (
+                f"🟢 {analysis_target}/{analysis_target} "
+                "یا بیشتر"
+            )
+
+        else:
+
+            analysis_progress = (
+                f"🟡 {total_candles}/{analysis_target} "
+                "کندل"
+            )
+
+        # ----------------------------------------------------
+        # SYSTEM STATUS MESSAGE
+        # ----------------------------------------------------
+
+        lines = [
+            "🖥 وضعیت سیستم Iran Gold AI",
+            "",
+            "🔐 سطح دسترسی: ADMIN",
+            "━━━━━━━━━━━━━━━━",
+            "",
+            "📡 جمع‌آوری داده",
+            "🟢 Collector: فعال",
+            "⏱ دوره جمع‌آوری: هر ۵ دقیقه",
+            f"📦 Market Snapshot: {total_snapshots}",
+            f"🕐 آخرین Snapshot: {latest_snapshot_time}",
+            "",
+            "💰 آخرین قیمت",
+            f"   {latest_price_text}",
+            "",
+            "🕯 موتور کندل",
+            f"5m:  {candle_5m_status}",
+            f"15m: {candle_15m_status}",
+            f"1h:  {candle_1h_status}",
+            "",
+            f"📊 کندل‌های موجود: {total_candles}",
+            f"🎯 پیشرفت تحلیل: {analysis_progress}",
+            "",
+            "🧠 موتور تحلیل",
+            "🟢 فعال",
+            f"📊 تحلیل‌های ثبت‌شده: {total_analyses}",
+            f"🎯 آخرین Signal: {latest_signal}",
+            f"📈 آخرین Trend: {latest_trend}",
+            f"📊 Confidence: {latest_confidence_text}",
+            "",
+            "📡 منابع داده",
+            "🟢 TGJU",
+            "🟢 World Gold API",
+            "🟢 NetArz USD/Toman",
+            "🟡 Servix: فقط تست دستی",
+            "",
+            "💾 دیتابیس",
+            "🟢 فعال",
+            f"📦 Snapshot: {total_snapshots}",
+            f"🕯 Candle: {total_candles}",
+            f"🧠 Analysis: {total_analyses}",
+            "",
+            "ℹ️ Legacy",
+            f"قیمت‌های قدیمی: {total_prices}",
+            "",
+            "━━━━━━━━━━━━━━━━",
+            "🤖 Iran Gold AI"
+        ]
+
+        await update.message.reply_text(
+            "\n".join(lines)
+        )
+
+    except Exception as error:
+
+        print(
+            "❌ SYSTEM STATUS ERROR:",
+            error,
+            flush=True
+        )
+
+        traceback.print_exc()
+
+        await update.message.reply_text(
+            "❌ خطا در دریافت وضعیت سیستم."
+        )
+
+
+# ============================================================
 # HEALTH CHECK SERVER
 # ============================================================
 
@@ -464,7 +783,9 @@ def start_health_server():
 # TELEGRAM MENU
 # ============================================================
 
-def get_main_keyboard():
+def get_main_keyboard(
+    admin=False
+):
 
     keyboard = [
         [
@@ -493,6 +814,20 @@ def get_main_keyboard():
         ],
     ]
 
+    # --------------------------------------------------------
+    # ADMIN ONLY BUTTON
+    # --------------------------------------------------------
+
+    if admin:
+
+        keyboard.append(
+            [
+                KeyboardButton(
+                    "🖥 وضعیت سیستم"
+                )
+            ]
+        )
+
     return ReplyKeyboardMarkup(
         keyboard,
         resize_keyboard=True
@@ -508,11 +843,15 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    admin = is_admin(update)
+
     await update.message.reply_text(
         "🤖 به Iran Gold AI خوش آمدید.\n\n"
         "سیستم هوشمند تحلیل بازار طلای ایران.\n\n"
         "یک گزینه را انتخاب کنید:",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(
+            admin=admin
+        )
     )
 
 
@@ -934,6 +1273,13 @@ async def text_handler(
             context
         )
 
+    elif text == "🖥 وضعیت سیستم":
+
+        await system_status_command(
+            update,
+            context
+        )
+
     elif text == "ℹ️ درباره":
 
         await about_command(
@@ -1062,6 +1408,27 @@ def main():
         "✅ BOT_TOKEN found.",
         flush=True
     )
+
+    # --------------------------------------------------------
+    # ADMIN
+    # --------------------------------------------------------
+
+    admin_id = get_admin_user_id()
+
+    if admin_id:
+
+        print(
+            f"🔐 Admin ID configured: {admin_id}",
+            flush=True
+        )
+
+    else:
+
+        print(
+            "⚠️ ADMIN_USER_ID not configured. "
+            "Admin-only menu will be hidden.",
+            flush=True
+        )
 
     # --------------------------------------------------------
     # DATABASE
