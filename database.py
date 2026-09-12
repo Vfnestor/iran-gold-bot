@@ -56,14 +56,6 @@ def init_db():
     # ========================================================
     # LEGACY RAW GOLD PRICES
     # ========================================================
-    #
-    # این جدول برای سازگاری با نسخه قبلی پروژه نگه داشته شده.
-    #
-    # در معماری جدید Collector نباید قیمت‌های لحظه‌ای را
-    # در این جدول ذخیره کند.
-    #
-    # جدول فعلاً حذف نمی‌شود تا اطلاعات قبلی از بین نرود.
-    #
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS gold_prices (
@@ -79,6 +71,58 @@ def init_db():
             source TEXT NOT NULL,
 
             timestamp TEXT NOT NULL
+        )
+    """)
+
+    # ========================================================
+    # TGJU RAW INTRADAY PRICE POINTS
+    # ========================================================
+    #
+    # این جدول نقاط خام نمودار TGJU را نگهداری می‌کند.
+    #
+    # TGJU در صفحه نمودار، داده‌هایی تقریباً هر چند ثانیه
+    # به شکل زیر ارائه می‌کند:
+    #
+    # [timestamp_ms, price]
+    #
+    # این داده‌ها منبع اصلی ساخت کندل 5 دقیقه‌ای خواهند بود.
+    #
+    # سپس:
+    #
+    # 3 کندل 5m  -> 15m
+    # 12 کندل 5m -> 1h
+    #
+    # نکته:
+    # این جدول با market_snapshots متفاوت است.
+    #
+    # market_snapshots:
+    #     تقریباً هر 5 دقیقه یک وضعیت کلی بازار
+    #
+    # tgju_price_points:
+    #     نقاط خام intraday TGJU
+    #
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tgju_price_points (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            symbol TEXT NOT NULL,
+
+            timestamp_ms INTEGER NOT NULL,
+
+            timestamp TEXT NOT NULL,
+
+            price INTEGER NOT NULL,
+
+            source TEXT NOT NULL DEFAULT 'tgju',
+
+            created_at TEXT NOT NULL,
+
+            UNIQUE(
+                symbol,
+                timestamp_ms
+            )
         )
     """)
 
@@ -120,23 +164,6 @@ def init_db():
     # ========================================================
     # MARKET SNAPSHOTS
     # ========================================================
-    #
-    # هر رکورد = یک وضعیت بازار در یک زمان مشخص.
-    #
-    # قرار است Collector در معماری جدید تقریباً هر 5 دقیقه
-    # یک Snapshot ایجاد کند.
-    #
-    # قیمت‌های لحظه‌ای 10 ثانیه‌ای در این جدول ذخیره نمی‌شوند.
-    #
-    # منابع:
-    #
-    # TGJU       -> gold_18k_toman
-    # World Gold -> xau_usd
-    # USD/Toman  -> usd_buy / usd_sell / usd_mid
-    # Servix     -> servix_gold_18k_toman
-    #
-    # Servix می‌تواند NULL باشد.
-    #
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_snapshots (
@@ -174,13 +201,6 @@ def init_db():
     # ========================================================
     # ANALYSIS HISTORY
     # ========================================================
-    #
-    # فقط نتیجه تحلیل در این جدول ذخیره می‌شود.
-    #
-    # قیمت‌های خام لحظه‌ای اینجا ذخیره نمی‌شوند.
-    #
-    # این جدول بعداً تاریخچه اصلی دکمه «📊 تاریخچه» خواهد بود.
-    #
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS analysis_history (
@@ -284,6 +304,27 @@ def init_db():
     """)
 
     # ========================================================
+    # INDEXES - TGJU RAW POINTS
+    # ========================================================
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_tgju_points_timestamp
+
+        ON tgju_price_points(timestamp_ms)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS
+        idx_tgju_points_symbol_timestamp
+
+        ON tgju_price_points(
+            symbol,
+            timestamp_ms
+        )
+    """)
+
+    # ========================================================
     # INDEXES - CANDLES
     # ========================================================
 
@@ -377,6 +418,375 @@ def get_current_timestamp():
 
 
 # ============================================================
+# SAVE TGJU RAW PRICE POINTS
+# ============================================================
+
+def save_tgju_price_points(
+    points,
+    symbol="gold_18k"
+):
+    """
+    ذخیره نقاط خام intraday دریافت‌شده از TGJU.
+
+    هر point باید حداقل شامل این اطلاعات باشد:
+
+        timestamp_ms
+        price
+
+    timestamp نیز در صورت وجود استفاده می‌شود،
+    در غیر این صورت از timestamp_ms ساخته می‌شود.
+
+    رکوردهای تکراری با استفاده از
+    UNIQUE(symbol, timestamp_ms)
+    نادیده گرفته می‌شوند.
+
+    خروجی:
+
+        {
+            "received": تعداد نقاط ورودی,
+            "saved": تعداد نقاط جدید,
+            "duplicates": تعداد نقاط تکراری
+        }
+    """
+
+    if not points:
+
+        return {
+            "received": 0,
+            "saved": 0,
+            "duplicates": 0
+        }
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    saved = 0
+    duplicates = 0
+
+    created_at = get_current_timestamp()
+
+    try:
+
+        for point in points:
+
+            timestamp_ms = point.get(
+                "timestamp_ms"
+            )
+
+            price = point.get(
+                "price"
+            )
+
+            if timestamp_ms is None:
+                continue
+
+            if price is None:
+                continue
+
+            try:
+
+                timestamp_ms = int(
+                    timestamp_ms
+                )
+
+                price = int(
+                    float(price)
+                )
+
+            except (
+                TypeError,
+                ValueError
+            ):
+
+                continue
+
+            if timestamp_ms <= 0:
+                continue
+
+            if price <= 0:
+                continue
+
+            timestamp = point.get(
+                "timestamp"
+            )
+
+            if hasattr(
+                timestamp,
+                "isoformat"
+            ):
+
+                timestamp = (
+                    timestamp.isoformat()
+                )
+
+            elif not timestamp:
+
+                timestamp = (
+                    datetime.fromtimestamp(
+                        timestamp_ms / 1000,
+                        tz=timezone.utc
+                    ).isoformat()
+                )
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO
+                tgju_price_points (
+
+                    symbol,
+
+                    timestamp_ms,
+
+                    timestamp,
+
+                    price,
+
+                    source,
+
+                    created_at
+
+                )
+
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+
+                symbol,
+
+                timestamp_ms,
+
+                timestamp,
+
+                price,
+
+                "tgju",
+
+                created_at
+            ))
+
+            if cursor.rowcount == 1:
+
+                saved += 1
+
+            else:
+
+                duplicates += 1
+
+        conn.commit()
+
+    except Exception:
+
+        conn.rollback()
+
+        raise
+
+    finally:
+
+        conn.close()
+
+    print(
+        f"💾 TGJU points: "
+        f"received={len(points)} "
+        f"saved={saved} "
+        f"duplicates={duplicates}",
+        flush=True
+    )
+
+    return {
+        "received": len(points),
+        "saved": saved,
+        "duplicates": duplicates
+    }
+
+
+# ============================================================
+# GET TGJU RAW PRICE POINTS
+# ============================================================
+
+def get_tgju_price_points(
+    symbol="gold_18k",
+    limit=5000
+):
+    """
+    دریافت جدیدترین نقاط خام TGJU.
+
+    جدیدترین نقطه ابتدا برمی‌گردد.
+
+    خروجی:
+
+        [
+            (
+                timestamp_ms,
+                timestamp,
+                price
+            ),
+            ...
+        ]
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            timestamp_ms,
+
+            timestamp,
+
+            price
+
+        FROM tgju_price_points
+
+        WHERE symbol = ?
+
+        ORDER BY timestamp_ms DESC
+
+        LIMIT ?
+    """, (
+
+        symbol,
+        limit
+    ))
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# GET TGJU POINTS BY TIME RANGE
+# ============================================================
+
+def get_tgju_price_points_range(
+    start_timestamp_ms,
+    end_timestamp_ms,
+    symbol="gold_18k"
+):
+    """
+    دریافت نقاط خام TGJU در یک بازه زمانی مشخص.
+
+    ترتیب خروجی از قدیمی به جدید است.
+
+    این تابع بعداً برای ساخت کندل‌های 5 دقیقه‌ای
+    استفاده خواهد شد.
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            timestamp_ms,
+
+            timestamp,
+
+            price
+
+        FROM tgju_price_points
+
+        WHERE symbol = ?
+
+        AND timestamp_ms >= ?
+
+        AND timestamp_ms < ?
+
+        ORDER BY timestamp_ms ASC
+    """, (
+
+        symbol,
+
+        int(start_timestamp_ms),
+
+        int(end_timestamp_ms)
+    ))
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+# ============================================================
+# GET LATEST TGJU POINT
+# ============================================================
+
+def get_latest_tgju_price_point(
+    symbol="gold_18k"
+):
+    """
+    دریافت آخرین نقطه خام TGJU.
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+
+            timestamp_ms,
+
+            timestamp,
+
+            price
+
+        FROM tgju_price_points
+
+        WHERE symbol = ?
+
+        ORDER BY timestamp_ms DESC
+
+        LIMIT 1
+    """, (
+        symbol,
+    ))
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+# ============================================================
+# GET TGJU POINT COUNT
+# ============================================================
+
+def get_tgju_price_point_count(
+    symbol="gold_18k"
+):
+    """
+    تعداد کل نقاط خام TGJU.
+    """
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+
+        FROM tgju_price_points
+
+        WHERE symbol = ?
+    """, (
+        symbol,
+    ))
+
+    count = cursor.fetchone()[0]
+
+    conn.close()
+
+    return count
+
+
+# ============================================================
 # RESERVE SERVIX REQUEST
 # ============================================================
 
@@ -385,14 +795,6 @@ def reserve_servix_request(
 ):
     """
     رزرو یک درخواست Servix.
-
-    قبل از ارسال HTTP request فراخوانی می‌شود.
-
-    اگر سهمیه موجود باشد:
-        allowed = True
-
-    اگر سهمیه تمام شده باشد:
-        allowed = False
     """
 
     usage_date = get_current_utc_date()
@@ -605,12 +1007,6 @@ def reset_servix_usage():
 # ============================================================
 # SAVE LEGACY RAW PRICE
 # ============================================================
-#
-# این تابع برای سازگاری با فایل‌های قدیمی نگه داشته شده.
-#
-# در مرحله Collector بعدی دیگر از این تابع برای ذخیره
-# قیمت‌های لحظه‌ای استفاده نخواهیم کرد.
-#
 
 def save_price(data):
 
@@ -751,14 +1147,6 @@ def save_market_snapshot(
     world_gold_timestamp=None,
     usd_timestamp=None
 ):
-    """
-    ذخیره یک Snapshot از وضعیت بازار.
-
-    هر Snapshot نماینده یک لحظه مشخص از بازار است.
-
-    قیمت‌های لحظه‌ای در اینجا ذخیره نمی‌شوند؛
-    Collector باید تقریباً هر 5 دقیقه یک Snapshot بسازد.
-    """
 
     if timestamp is None:
 
@@ -798,9 +1186,7 @@ def save_market_snapshot(
         VALUES (
 
             ?,
-
             ?,
-
             ?,
 
             ?,
@@ -893,11 +1279,6 @@ def save_market_snapshot(
 def get_market_history(
     limit=100
 ):
-    """
-    دریافت تاریخچه Snapshotهای بازار.
-
-    جدیدترین رکورد ابتدا برمی‌گردد.
-    """
 
     conn = get_connection()
 
@@ -992,12 +1373,6 @@ def get_latest_market_snapshot():
 def save_analysis(
     analysis
 ):
-    """
-    ذخیره نتیجه نهایی موتور تحلیل.
-
-    analysis می‌تواند علاوه بر فیلدهای اصلی،
-    اطلاعات اضافی را نیز داخل analysis_data داشته باشد.
-    """
 
     timestamp = (
         analysis.get("timestamp")
@@ -1005,10 +1380,6 @@ def save_analysis(
     )
 
     created_at = get_current_timestamp()
-
-    # --------------------------------------------------------
-    # اطلاعات تکمیلی تحلیل
-    # --------------------------------------------------------
 
     analysis_data = analysis.get(
         "analysis_data"
@@ -1255,14 +1626,6 @@ def save_analysis(
 def get_analysis_history(
     limit=20
 ):
-    """
-    تاریخچه اصلی تحلیل.
-
-    این تابع همان چیزی است که بعداً دکمه
-    «📊 تاریخچه» از آن استفاده خواهد کرد.
-
-    قیمت‌های خام منابع اینجا نمایش داده نمی‌شوند.
-    """
 
     conn = get_connection()
 
@@ -1597,6 +1960,19 @@ def get_database_stats():
     total_prices = cursor.fetchone()[0]
 
     # --------------------------------------------------------
+    # TGJU RAW POINT COUNT
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM tgju_price_points
+    """)
+
+    total_tgju_points = (
+        cursor.fetchone()[0]
+    )
+
+    # --------------------------------------------------------
     # CANDLE COUNT
     # --------------------------------------------------------
 
@@ -1756,6 +2132,30 @@ def get_database_stats():
     )
 
     # --------------------------------------------------------
+    # LATEST TGJU POINT
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        SELECT timestamp
+
+        FROM tgju_price_points
+
+        ORDER BY timestamp_ms DESC
+
+        LIMIT 1
+    """)
+
+    latest_tgju_point_row = (
+        cursor.fetchone()
+    )
+
+    latest_tgju_point_timestamp = (
+        latest_tgju_point_row[0]
+        if latest_tgju_point_row
+        else None
+    )
+
+    # --------------------------------------------------------
     # LEGACY LATEST PRICE
     # --------------------------------------------------------
 
@@ -1792,6 +2192,9 @@ def get_database_stats():
         "total_prices":
             total_prices,
 
+        "total_tgju_points":
+            total_tgju_points,
+
         "total_candles":
             total_candles,
 
@@ -1809,6 +2212,9 @@ def get_database_stats():
 
         "latest_price_timestamp":
             latest_price_timestamp,
+
+        "latest_tgju_point_timestamp":
+            latest_tgju_point_timestamp,
 
         "latest_snapshot_timestamp":
             latest_snapshot_timestamp,
@@ -1914,6 +2320,11 @@ if __name__ == "__main__":
     print(
         f"💾 Legacy prices   : "
         f"{stats['total_prices']}"
+    )
+
+    print(
+        f"📡 TGJU raw points : "
+        f"{stats['total_tgju_points']}"
     )
 
     print(
