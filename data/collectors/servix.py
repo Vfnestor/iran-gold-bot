@@ -2,23 +2,31 @@ import os
 import requests
 from datetime import datetime, timezone
 
+from database import (
+    reserve_servix_request,
+    get_servix_usage,
+)
 
-SERVIX_URL = "https://servix.cc/api/v1/assets/GOLD_18_RLS"
+
+SERVIX_URL = (
+    "https://servix.cc/api/v1/assets/GOLD_18_RLS"
+)
 
 
 def get_servix_api_key():
     """
     دریافت API Key در زمان اجرای تابع.
-
-    این کار باعث می‌شود اگر .env بعداً load شده باشد،
-    API Key از دست نرود.
     """
 
-    api_key = os.getenv("SERVIX_API_KEY")
+    api_key = os.getenv(
+        "SERVIX_API_KEY"
+    )
 
     if not api_key:
+
         raise RuntimeError(
-            "SERVIX_API_KEY environment variable is not set"
+            "SERVIX_API_KEY environment variable "
+            "is not set"
         )
 
     return api_key
@@ -28,33 +36,75 @@ def get_servix_gold():
     """
     دریافت آخرین قیمت طلای 18 عیار از Servix.
 
-    Servix:
-        price_riel  -> قیمت بر حسب ریال
-        price_toman -> قیمت بر حسب تومان
+    محدودیت داخلی پروژه:
+        حداکثر 45 درخواست در روز
 
-    این تابع:
-        - خطای 429 را تشخیص می‌دهد
-        - Retry خودکار انجام نمی‌دهد
-        - زمان درخواست را ثبت می‌کند
-        - اطلاعات کامل پاسخ را برمی‌گرداند
+    Servix:
+        price_riel  -> ریال
+        price_toman -> تومان
     """
+
+    # ========================================================
+    # CHECK / RESERVE DAILY QUOTA
+    # ========================================================
+
+    quota = reserve_servix_request()
+
+    if not quota["allowed"]:
+
+        raise RuntimeError(
+            "Servix daily request quota exhausted. "
+            f"Used: {quota['used']}, "
+            f"Limit: {45}, "
+            f"Date: {quota['date']}"
+        )
+
+
+    print(
+        "📡 Servix quota reserved: "
+        f"{quota['used']}/45 "
+        f"(remaining: {quota['remaining']})",
+        flush=True
+    )
+
+
+    # ========================================================
+    # API KEY
+    # ========================================================
 
     api_key = get_servix_api_key()
 
+
     headers = {
-        "X-API-Key": api_key,
-        "Accept": "application/json",
+
+        "X-API-Key":
+            api_key,
+
+        "Accept":
+            "application/json",
     }
 
-    requested_at = datetime.now(timezone.utc)
+
+    requested_at = datetime.now(
+        timezone.utc
+    )
+
+
+    # ========================================================
+    # HTTP REQUEST
+    # ========================================================
 
     try:
 
         response = requests.get(
+
             SERVIX_URL,
+
             headers=headers,
+
             timeout=10,
         )
+
 
     except requests.Timeout as exc:
 
@@ -62,11 +112,13 @@ def get_servix_gold():
             "Servix request timed out"
         ) from exc
 
+
     except requests.ConnectionError as exc:
 
         raise RuntimeError(
             "Servix connection failed"
         ) from exc
+
 
     except requests.RequestException as exc:
 
@@ -81,14 +133,18 @@ def get_servix_gold():
 
     if response.status_code == 429:
 
-        retry_after = response.headers.get(
-            "Retry-After"
+        retry_after = (
+            response.headers.get(
+                "Retry-After"
+            )
         )
+
 
         message = (
             "Servix rate limit reached "
             "(HTTP 429)"
         )
+
 
         if retry_after:
 
@@ -96,6 +152,7 @@ def get_servix_gold():
                 f". Retry-After: "
                 f"{retry_after}"
             )
+
 
         raise RuntimeError(
             message
@@ -161,30 +218,41 @@ def get_servix_gold():
     # PRICE
     # ========================================================
 
-    value = data.get("value")
+    value = data.get(
+        "value"
+    )
+
 
     if value is None:
 
         raise RuntimeError(
-            "Servix response does not contain 'value'"
+            "Servix response does not contain "
+            "'value'"
         )
 
 
     try:
 
-        price_riel = float(value)
+        price_riel = float(
+            value
+        )
 
-    except (TypeError, ValueError) as exc:
+    except (
+        TypeError,
+        ValueError
+    ) as exc:
 
         raise RuntimeError(
-            f"Invalid Servix price value: {value}"
+            f"Invalid Servix price value: "
+            f"{value}"
         ) from exc
 
 
     if price_riel <= 0:
 
         raise RuntimeError(
-            f"Invalid Servix price: {price_riel}"
+            f"Invalid Servix price: "
+            f"{price_riel}"
         )
 
 
@@ -198,10 +266,12 @@ def get_servix_gold():
 
 
     # ========================================================
-    # TOMAN CONVERSION
+    # TOMAN
     # ========================================================
 
-    price_toman = price_riel / 10
+    price_toman = (
+        price_riel / 10
+    )
 
 
     # ========================================================
@@ -216,29 +286,26 @@ def get_servix_gold():
         "symbol":
             "GOLD_18_RLS",
 
-        # قیمت اصلی Servix
         "price_riel":
             price_riel,
 
-        # قیمت استاندارد پروژه
         "price_toman":
             price_toman,
 
-        # زمان بازار
         "business_time":
             business_time,
 
-        # زمان دریافت توسط ربات
         "received_at":
             requested_at.isoformat(),
 
-        # HTTP status
         "http_status":
             response.status_code,
 
-        # داده خام
         "raw":
             data,
+
+        "quota":
+            quota,
     }
 
 
@@ -248,9 +315,58 @@ def get_servix_gold():
 
 if __name__ == "__main__":
 
+    print(
+        "================================"
+    )
+
+    print(
+        "SERVIX TEST"
+    )
+
+    print(
+        "================================"
+    )
+
+
     try:
 
+        # ----------------------------------------------------
+        # نمایش سهمیه قبل از درخواست
+        # ----------------------------------------------------
+
+        usage_before = get_servix_usage()
+
+        print(
+            "📊 QUOTA BEFORE REQUEST"
+        )
+
+        print(
+            f"Date      : "
+            f"{usage_before['date']}"
+        )
+
+        print(
+            f"Used      : "
+            f"{usage_before['used']}"
+        )
+
+        print(
+            f"Remaining : "
+            f"{usage_before['remaining']}"
+        )
+
+        print(
+            f"Limit     : "
+            f"{usage_before['limit']}"
+        )
+
+
+        # ----------------------------------------------------
+        # درخواست Servix
+        # ----------------------------------------------------
+
         result = get_servix_gold()
+
 
         print(
             "================================"
@@ -302,6 +418,28 @@ if __name__ == "__main__":
         print(
             "================================"
         )
+
+
+        # ----------------------------------------------------
+        # سهمیه بعد از درخواست
+        # ----------------------------------------------------
+
+        usage_after = get_servix_usage()
+
+        print(
+            "📊 QUOTA AFTER REQUEST"
+        )
+
+        print(
+            f"Used      : "
+            f"{usage_after['used']}"
+        )
+
+        print(
+            f"Remaining : "
+            f"{usage_after['remaining']}"
+        )
+
 
     except Exception as exc:
 
