@@ -78,6 +78,7 @@ def get_admin_user_id():
         return None
 
     try:
+
         return int(value)
 
     except ValueError:
@@ -104,6 +105,99 @@ def is_admin(update: Update):
         update.effective_user.id
         == admin_id
     )
+
+
+# ============================================================
+# DATABASE ROW HELPERS
+# ============================================================
+
+def snapshot_to_dict(row):
+    """
+    Convert market_snapshots database tuple to dictionary.
+    Supports both tuple and dict formats.
+    """
+
+    if row is None:
+        return None
+
+    if isinstance(row, dict):
+        return row
+
+    if isinstance(row, tuple):
+
+        columns = [
+            "id",
+            "timestamp",
+            "gold_18k_toman",
+            "world_gold_usd",
+            "usd_buy_toman",
+            "usd_sell_toman",
+            "usd_mid_toman",
+            "servix_gold_18k_toman",
+            "servix_timestamp",
+            "tgju_timestamp",
+            "world_gold_timestamp",
+            "usd_timestamp",
+            "created_at",
+        ]
+
+        return dict(
+            zip(columns, row)
+        )
+
+    return None
+
+
+def analysis_to_dict(row):
+    """
+    Convert analysis_history database tuple to dictionary.
+    Supports both tuple and dict formats.
+    """
+
+    if row is None:
+        return None
+
+    if isinstance(row, dict):
+        return row
+
+    if isinstance(row, tuple):
+
+        columns = [
+            "id",
+            "timestamp",
+            "symbol",
+            "price_toman",
+            "signal",
+            "trend",
+            "confidence",
+            "entry",
+            "stop_loss",
+            "take_profit_1",
+            "take_profit_2",
+            "take_profit_3",
+            "risk_reward",
+            "rsi",
+            "macd",
+            "macd_signal",
+            "ema_fast",
+            "ema_slow",
+            "atr",
+            "momentum",
+            "support",
+            "resistance",
+            "world_gold_usd",
+            "usd_mid_toman",
+            "fair_value_toman",
+            "source_spread",
+            "analysis_data",
+            "created_at",
+        ]
+
+        return dict(
+            zip(columns, row)
+        )
+
+    return None
 
 
 # ============================================================
@@ -470,11 +564,11 @@ async def system_status_command(
 
         stats = get_database_stats()
 
-        latest_snapshot = (
+        latest_snapshot = snapshot_to_dict(
             get_latest_market_snapshot()
         )
 
-        latest_analysis = (
+        latest_analysis = analysis_to_dict(
             get_latest_analysis()
         )
 
@@ -525,6 +619,10 @@ async def system_status_command(
             "source_counts",
             {}
         )
+
+        # Prevent unused-variable issues while keeping
+        # source statistics available for future dashboard use.
+        _ = source_counts
 
         # ----------------------------------------------------
         # LATEST SNAPSHOT
@@ -866,7 +964,7 @@ async def price_command(
 
     try:
 
-        snapshot = (
+        snapshot = snapshot_to_dict(
             get_latest_market_snapshot()
         )
 
@@ -964,6 +1062,12 @@ async def history_command(
             analyses,
             start=1
         ):
+
+            if isinstance(item, tuple):
+
+                item = analysis_to_dict(
+                    item
+                )
 
             price = item.get(
                 "price_toman"
