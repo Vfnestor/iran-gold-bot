@@ -1,14 +1,16 @@
 import time
 import traceback
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
 from data.collectors.tgju import get_gold_18k
+from data.collectors.world_gold import get_world_gold
+from data.collectors.usd_toman import get_usd_toman
 
-from database import save_price
+from database import save_market_snapshot
 
 from candle_engine import (
-    build_1m_candle,
     build_timeframe_candles,
 )
 
@@ -24,146 +26,206 @@ load_dotenv()
 # CONFIG
 # ============================================================
 
-COLLECT_INTERVAL = 10
+# هر 5 دقیقه یک Snapshot
+COLLECT_INTERVAL = 5 * 60
 
 SYMBOL = "gold_18k"
 
-# حداکثر اختلاف قابل قبول بین دو منبع
-# به صورت درصد
-MAX_SOURCE_DIFFERENCE_PERCENT = 1.0
+
+# ============================================================
+# TIMESTAMP
+# ============================================================
+
+def utc_now_iso():
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
 
 
 # ============================================================
-# PRICE NORMALIZATION
+# SAFE FLOAT
+# ============================================================
+
+def safe_float(value):
+    if value is None:
+        return None
+
+    try:
+        return float(value)
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
+# ============================================================
+# NORMALIZE TGJU
 # ============================================================
 
 def normalize_tgju_price(data):
     """
-    تبدیل داده TGJU به ساختار استاندارد سیستم.
+    استانداردسازی قیمت طلای 18 عیار TGJU.
 
-    در پروژه ما قیمت نهایی به تومان استفاده می‌شود.
+    خروجی نهایی همیشه تومان است.
     """
 
-    price = float(
-        data["price"]
+    if not data:
+        return None
+
+    price = safe_float(
+        data.get("price")
     )
 
-    currency = str(
-        data.get(
-            "currency",
-            ""
+    if price is None or price <= 0:
+        return None
+
+    return {
+        "price_toman": price,
+        "timestamp": data.get(
+            "timestamp"
+        ),
+        "source": "tgju",
+    }
+
+
+# ============================================================
+# NORMALIZE WORLD GOLD
+# ============================================================
+
+def normalize_world_gold(data):
+    """
+    استانداردسازی XAU/USD.
+
+    World Gold API:
+        XAU/USD
+        Troy Ounce
+    """
+
+    if not data:
+        return None
+
+    price = None
+
+    # حالت فعلی collector
+    if data.get("price_usd") is not None:
+        price = data.get(
+            "price_usd"
         )
-    ).upper()
 
-    # --------------------------------------------------------
-    # TGJU فعلی پروژه عملاً قیمت طلای ایران را به تومان
-    # برمی‌گرداند، اما currency قبلاً IRR ثبت شده بود.
-    #
-    # برای جلوگیری از تغییر اشتباه مقدار قیمت،
-    # همان عدد را به عنوان تومان در نظر می‌گیریم.
-    # --------------------------------------------------------
+    # حالت‌های احتمالی سازگار
+    elif data.get("price") is not None:
+        price = data.get(
+            "price"
+        )
 
-    if currency in (
-        "IRR",
-        "RIAL",
-        "ریال",
+    elif data.get("gold_price") is not None:
+        price = data.get(
+            "gold_price"
+        )
+
+    price = safe_float(price)
+
+    if price is None or price <= 0:
+        return None
+
+    return {
+        "price_usd": price,
+        "timestamp": data.get(
+            "timestamp"
+        ),
+        "source": "gold_api",
+    }
+
+
+# ============================================================
+# NORMALIZE USD / TOMAN
+# ============================================================
+
+def normalize_usd_toman(data):
+    """
+    استانداردسازی دلار به تومان.
+
+    نگه می‌داریم:
+        buy
+        sell
+        mid
+    """
+
+    if not data:
+        return None
+
+    buy = safe_float(
+        data.get(
+            "buy_toman"
+        )
+    )
+
+    if buy is None:
+        buy = safe_float(
+            data.get(
+                "buy"
+            )
+        )
+
+    sell = safe_float(
+        data.get(
+            "sell_toman"
+        )
+    )
+
+    if sell is None:
+        sell = safe_float(
+            data.get(
+                "sell"
+            )
+        )
+
+    mid = safe_float(
+        data.get(
+            "mid_toman"
+        )
+    )
+
+    if mid is None:
+        mid = safe_float(
+            data.get(
+                "mid"
+            )
+        )
+
+    # اگر Mid موجود نبود،
+    # از میانگین خرید و فروش استفاده می‌کنیم.
+    if (
+        mid is None
+        and buy is not None
+        and sell is not None
     ):
+        mid = (
+            buy + sell
+        ) / 2
 
-        price_toman = price
-
-    else:
-
-        price_toman = price
+    if (
+        buy is None
+        and sell is None
+        and mid is None
+    ):
+        return None
 
     return {
-
-        "symbol":
-            SYMBOL,
-
-        "price":
-            int(round(price_toman)),
-
-        "currency":
-            "TOMAN",
-
-        "source":
-            "tgju",
-
-        "timestamp":
-            data.get("timestamp"),
+        "buy_toman": buy,
+        "sell_toman": sell,
+        "mid_toman": mid,
+        "timestamp": data.get(
+            "timestamp"
+        ),
+        "source": "netarz",
     }
 
 
 # ============================================================
-# SERVIX NORMALIZATION
-# ============================================================
-
-def normalize_servix_price(data):
-    """
-    تبدیل قیمت Servix از ریال به تومان.
-    """
-
-    price_riel = float(
-        data["price_riel"]
-    )
-
-    price_toman = (
-        price_riel / 10
-    )
-
-    return {
-
-        "symbol":
-            SYMBOL,
-
-        "price":
-            int(round(price_toman)),
-
-        "currency":
-            "TOMAN",
-
-        "source":
-            "servix",
-
-        "timestamp":
-            data.get(
-                "received_at"
-            ),
-
-        "business_time":
-            data.get(
-                "business_time"
-            ),
-    }
-
-
-# ============================================================
-# SOURCE DIFFERENCE
-# ============================================================
-
-def calculate_source_difference(
-    price_a,
-    price_b
-):
-
-    if price_a <= 0:
-
-        return 100.0
-
-    difference = abs(
-        price_a - price_b
-    )
-
-    percent = (
-        difference
-        / price_a
-    ) * 100
-
-    return percent
-
-
-# ============================================================
-# COLLECT FROM TGJU
+# COLLECT TGJU
 # ============================================================
 
 def collect_tgju():
@@ -172,7 +234,7 @@ def collect_tgju():
 
         print(
             "📡 TGJU: requesting gold price...",
-            flush=True
+            flush=True,
         )
 
         data = get_gold_18k()
@@ -181,10 +243,19 @@ def collect_tgju():
             data
         )
 
+        if not normalized:
+
+            print(
+                "🔴 TGJU: invalid data.",
+                flush=True,
+            )
+
+            return None
+
         print(
             "🟢 TGJU: "
-            f"{normalized['price']:,} تومان",
-            flush=True
+            f"{normalized['price_toman']:,.0f} تومان",
+            flush=True,
         )
 
         return normalized
@@ -192,50 +263,46 @@ def collect_tgju():
     except Exception as error:
 
         print(
-            "🔴 TGJU ERROR:",
-            flush=True
-        )
-
-        print(
-            f"   {type(error).__name__}: {error}",
-            flush=True
+            "🔴 TGJU ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
         )
 
         return None
 
 
 # ============================================================
-# COLLECT FROM SERVIX
+# COLLECT WORLD GOLD
 # ============================================================
 
-def collect_servix():
+def collect_world_gold():
 
     try:
 
         print(
-            "📡 SERVIX: requesting gold price...",
-            flush=True
+            "📡 WORLD GOLD: requesting XAU/USD...",
+            flush=True,
         )
 
-        # ----------------------------------------------------
-        # Import داخل تابع انجام می‌شود تا SERVIX_API_KEY
-        # بعد از load_dotenv خوانده شود.
-        # ----------------------------------------------------
+        data = get_world_gold()
 
-        from data.collectors.servix import (
-            get_servix_gold
-        )
-
-        data = get_servix_gold()
-
-        normalized = normalize_servix_price(
+        normalized = normalize_world_gold(
             data
         )
 
+        if not normalized:
+
+            print(
+                "🔴 WORLD GOLD: invalid data.",
+                flush=True,
+            )
+
+            return None
+
         print(
-            "🟢 SERVIX: "
-            f"{normalized['price']:,} تومان",
-            flush=True
+            "🟢 WORLD GOLD: "
+            f"${normalized['price_usd']:,.2f} / oz",
+            flush=True,
         )
 
         return normalized
@@ -243,506 +310,395 @@ def collect_servix():
     except Exception as error:
 
         print(
-            "🔴 SERVIX ERROR:",
-            flush=True
-        )
-
-        print(
-            f"   {type(error).__name__}: {error}",
-            flush=True
+            "🔴 WORLD GOLD ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
         )
 
         return None
 
 
 # ============================================================
-# VALIDATE SOURCES
+# COLLECT USD / TOMAN
 # ============================================================
 
-def validate_sources(
+def collect_usd_toman():
+
+    try:
+
+        print(
+            "📡 USD/TOMAN: requesting FX...",
+            flush=True,
+        )
+
+        data = get_usd_toman()
+
+        normalized = normalize_usd_toman(
+            data
+        )
+
+        if not normalized:
+
+            print(
+                "🔴 USD/TOMAN: invalid data.",
+                flush=True,
+            )
+
+            return None
+
+        buy = normalized.get(
+            "buy_toman"
+        )
+
+        sell = normalized.get(
+            "sell_toman"
+        )
+
+        mid = normalized.get(
+            "mid_toman"
+        )
+
+        print(
+            "🟢 USD/TOMAN:",
+            flush=True,
+        )
+
+        if mid is not None:
+            print(
+                f"   Mid   : "
+                f"{mid:,.0f} تومان",
+                flush=True,
+            )
+
+        if buy is not None:
+            print(
+                f"   Buy   : "
+                f"{buy:,.0f} تومان",
+                flush=True,
+            )
+
+        if sell is not None:
+            print(
+                f"   Sell  : "
+                f"{sell:,.0f} تومان",
+                flush=True,
+            )
+
+        return normalized
+
+    except Exception as error:
+
+        print(
+            "🔴 USD/TOMAN ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
+        return None
+
+
+# ============================================================
+# SAVE MARKET SNAPSHOT
+# ============================================================
+
+def save_snapshot(
     tgju_data,
-    servix_data
+    world_gold_data,
+    usd_data,
 ):
     """
-    انتخاب قیمت معتبر از بین TGJU و Servix.
+    ذخیره یک Snapshot کامل بازار.
 
-    حالت‌ها:
+    هر چرخه فقط یک رکورد ساخته می‌شود.
 
-    1. هر دو موجود:
-       - اختلاف <= 1%:
-         میانگین دو منبع
-       - اختلاف > 1%:
-         TGJU به عنوان قیمت اصلی موقت
-
-    2. فقط TGJU:
-       TGJU
-
-    3. فقط Servix:
-       Servix
-
-    4. هیچ‌کدام:
-       None
+    Servix فعلاً None است چون نباید
+    هر 5 دقیقه مصرف شود.
     """
 
+    snapshot_timestamp = utc_now_iso()
+
+    gold_price = None
+    world_gold = None
+
+    usd_buy = None
+    usd_sell = None
+    usd_mid = None
+
+    tgju_timestamp = None
+    world_gold_timestamp = None
+    usd_timestamp = None
+
     # --------------------------------------------------------
-    # NO DATA
+    # TGJU
     # --------------------------------------------------------
 
-    if (
-        tgju_data is None
-        and servix_data is None
-    ):
+    if tgju_data:
 
-        print(
-            "❌ VALIDATOR: "
-            "No valid source available.",
-            flush=True
+        gold_price = tgju_data.get(
+            "price_toman"
         )
 
-        return None
-
-
-    # --------------------------------------------------------
-    # TGJU ONLY
-    # --------------------------------------------------------
-
-    if (
-        tgju_data is not None
-        and servix_data is None
-    ):
-
-        print(
-            "🟡 VALIDATOR: "
-            "Using TGJU only.",
-            flush=True
+        tgju_timestamp = (
+            tgju_data.get(
+                "timestamp"
+            )
+            or snapshot_timestamp
         )
 
-        return {
-
-            "symbol":
-                SYMBOL,
-
-            "price":
-                tgju_data["price"],
-
-            "currency":
-                "TOMAN",
-
-            "source":
-                "tgju",
-
-            "timestamp":
-                tgju_data.get(
-                    "timestamp"
-                ),
-        }
-
-
     # --------------------------------------------------------
-    # SERVIX ONLY
+    # WORLD GOLD
     # --------------------------------------------------------
 
-    if (
-        tgju_data is None
-        and servix_data is not None
-    ):
+    if world_gold_data:
 
-        print(
-            "🟡 VALIDATOR: "
-            "Using Servix only.",
-            flush=True
-        )
-
-        return {
-
-            "symbol":
-                SYMBOL,
-
-            "price":
-                servix_data["price"],
-
-            "currency":
-                "TOMAN",
-
-            "source":
-                "servix",
-
-            "timestamp":
-                servix_data.get(
-                    "timestamp"
-                ),
-        }
-
-
-    # --------------------------------------------------------
-    # BOTH SOURCES
-    # --------------------------------------------------------
-
-    tgju_price = (
-        tgju_data["price"]
-    )
-
-    servix_price = (
-        servix_data["price"]
-    )
-
-    difference_percent = (
-        calculate_source_difference(
-            tgju_price,
-            servix_price
-        )
-    )
-
-    print(
-        "🔎 SOURCE VALIDATION:",
-        flush=True
-    )
-
-    print(
-        f"   TGJU   : {tgju_price:,} تومان",
-        flush=True
-    )
-
-    print(
-        f"   Servix : {servix_price:,} تومان",
-        flush=True
-    )
-
-    print(
-        f"   Difference: "
-        f"{difference_percent:.3f}%",
-        flush=True
-    )
-
-
-    # --------------------------------------------------------
-    # ACCEPTED DIFFERENCE
-    # --------------------------------------------------------
-
-    if (
-        difference_percent
-        <= MAX_SOURCE_DIFFERENCE_PERCENT
-    ):
-
-        validated_price = int(
-            round(
-                (
-                    tgju_price
-                    + servix_price
-                ) / 2
+        world_gold = (
+            world_gold_data.get(
+                "price_usd"
             )
         )
 
-        print(
-            "🟢 VALIDATOR: "
-            "Sources agree.",
-            flush=True
-        )
-
-        print(
-            f"🟢 VALIDATED PRICE: "
-            f"{validated_price:,} تومان",
-            flush=True
-        )
-
-        return {
-
-            "symbol":
-                SYMBOL,
-
-            "price":
-                validated_price,
-
-            "currency":
-                "TOMAN",
-
-            "source":
-                "tgju+servix",
-
-            "timestamp":
-                tgju_data.get(
-                    "timestamp"
-                ),
-
-            "tgju_price":
-                tgju_price,
-
-            "servix_price":
-                servix_price,
-
-            "source_difference_percent":
-                difference_percent,
-        }
-
-
-    # --------------------------------------------------------
-    # LARGE DIFFERENCE
-    # --------------------------------------------------------
-
-    print(
-        "⚠️ VALIDATOR WARNING:",
-        flush=True
-    )
-
-    print(
-        "⚠️ Difference between sources "
-        "is higher than allowed threshold.",
-        flush=True
-    )
-
-    print(
-        "⚠️ TGJU selected as temporary "
-        "primary source.",
-        flush=True
-    )
-
-    return {
-
-        "symbol":
-            SYMBOL,
-
-        "price":
-            tgju_price,
-
-        "currency":
-            "TOMAN",
-
-        "source":
-            "tgju_warning",
-
-        "timestamp":
-            tgju_data.get(
+        world_gold_timestamp = (
+            world_gold_data.get(
                 "timestamp"
+            )
+            or snapshot_timestamp
+        )
+
+    # --------------------------------------------------------
+    # USD/TOMAN
+    # --------------------------------------------------------
+
+    if usd_data:
+
+        usd_buy = (
+            usd_data.get(
+                "buy_toman"
+            )
+        )
+
+        usd_sell = (
+            usd_data.get(
+                "sell_toman"
+            )
+        )
+
+        usd_mid = (
+            usd_data.get(
+                "mid_toman"
+            )
+        )
+
+        usd_timestamp = (
+            usd_data.get(
+                "timestamp"
+            )
+            or snapshot_timestamp
+        )
+
+    # --------------------------------------------------------
+    # VALIDATION
+    # --------------------------------------------------------
+
+    if (
+        gold_price is None
+        and world_gold is None
+        and usd_mid is None
+    ):
+
+        print(
+            "❌ SNAPSHOT: "
+            "No usable market data.",
+            flush=True,
+        )
+
+        return False
+
+    # --------------------------------------------------------
+    # SAVE
+    # --------------------------------------------------------
+
+    try:
+
+        save_market_snapshot(
+
+            timestamp=snapshot_timestamp,
+
+            gold_18k_toman=gold_price,
+
+            world_gold_usd=world_gold,
+
+            usd_buy_toman=usd_buy,
+
+            usd_sell_toman=usd_sell,
+
+            usd_mid_toman=usd_mid,
+
+            # Servix فعلاً در چرخه 5 دقیقه‌ای
+            # استفاده نمی‌شود.
+            servix_gold_18k_toman=None,
+
+            servix_timestamp=None,
+
+            tgju_timestamp=tgju_timestamp,
+
+            world_gold_timestamp=(
+                world_gold_timestamp
             ),
 
-        "tgju_price":
-            tgju_price,
+            usd_timestamp=usd_timestamp,
+        )
 
-        "servix_price":
-            servix_price,
+        print(
+            "💾 SNAPSHOT: "
+            "Market snapshot saved.",
+            flush=True,
+        )
 
-        "source_difference_percent":
-            difference_percent,
-    }
+        return True
+
+    except Exception as error:
+
+        print(
+            "❌ SNAPSHOT SAVE ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
+        return False
 
 
 # ============================================================
-# COLLECT ONE PRICE
+# BUILD CANDLES
+# ============================================================
+
+def update_candles():
+
+    for timeframe in [
+        "5m",
+        "15m",
+        "1h",
+    ]:
+
+        try:
+
+            candles = build_timeframe_candles(
+
+                timeframe=timeframe,
+
+                symbol=SYMBOL,
+
+                limit=500,
+            )
+
+            print(
+                f"🕯️ CANDLE: "
+                f"{timeframe} updated "
+                f"({len(candles)} candles)",
+                flush=True,
+            )
+
+        except Exception as error:
+
+            print(
+                f"❌ CANDLE {timeframe}: "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True,
+            )
+
+
+# ============================================================
+# COLLECT ONE CYCLE
 # ============================================================
 
 def collect_once():
 
     print(
         "",
-        flush=True
+        flush=True,
     )
 
     print(
         "========================================",
-        flush=True
+        flush=True,
     )
 
     print(
-        "📡 COLLECTOR: New collection cycle",
-        flush=True
+        "📡 MARKET COLLECTOR: "
+        "New 5-minute cycle",
+        flush=True,
     )
 
     print(
         "========================================",
-        flush=True
+        flush=True,
     )
-
 
     # --------------------------------------------------------
-    # GET BOTH SOURCES
+    # COLLECT SOURCES
     # --------------------------------------------------------
 
     tgju_data = collect_tgju()
 
-    servix_data = collect_servix()
-
-
-    # --------------------------------------------------------
-    # VALIDATE
-    # --------------------------------------------------------
-
-    data = validate_sources(
-        tgju_data,
-        servix_data
+    world_gold_data = (
+        collect_world_gold()
     )
 
+    usd_data = collect_usd_toman()
 
-    if data is None:
+    # --------------------------------------------------------
+    # STATUS
+    # --------------------------------------------------------
+
+    active_sources = sum(
+        1
+        for source in [
+            tgju_data,
+            world_gold_data,
+            usd_data,
+        ]
+        if source is not None
+    )
+
+    print(
+        f"📊 ACTIVE SOURCES: "
+        f"{active_sources}/3",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # SAVE SNAPSHOT
+    # --------------------------------------------------------
+
+    saved = save_snapshot(
+
+        tgju_data=tgju_data,
+
+        world_gold_data=world_gold_data,
+
+        usd_data=usd_data,
+    )
+
+    if not saved:
 
         print(
-            "❌ COLLECTOR: "
-            "No valid price received.",
-            flush=True
+            "⚠️ COLLECTOR: "
+            "Snapshot was not saved.",
+            flush=True,
         )
 
         return
 
-
     # --------------------------------------------------------
-    # SAVE VALIDATED PRICE
+    # BUILD CANDLES
     # --------------------------------------------------------
 
-    print(
-        "💾 COLLECTOR: "
-        f"Saving {data['price']:,} تومان "
-        f"from {data['source']}",
-        flush=True
-    )
-
-    save_price(
-        data
-    )
+    update_candles()
 
     print(
         "✅ COLLECTOR: "
-        "Validated price saved.",
-        flush=True
-    )
-
-
-    # --------------------------------------------------------
-    # BUILD 1M CANDLE
-    # --------------------------------------------------------
-
-    try:
-
-        candle_1m = build_1m_candle(
-            symbol=data["symbol"]
-        )
-
-        if candle_1m:
-
-            print(
-                "🕯️ COLLECTOR: "
-                "1M candle updated.",
-                flush=True
-            )
-
-    except Exception as error:
-
-        print(
-            "❌ COLLECTOR: "
-            "1M candle error: "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True
-        )
-
-
-    # --------------------------------------------------------
-    # BUILD 5M CANDLE
-    # --------------------------------------------------------
-
-    try:
-
-        candles_5m = build_timeframe_candles(
-
-            timeframe="5m",
-
-            symbol=data["symbol"],
-
-            limit=500
-        )
-
-        if candles_5m:
-
-            print(
-                "🕯️ COLLECTOR: "
-                "5M candles updated: "
-                f"{len(candles_5m)}",
-                flush=True
-            )
-
-    except Exception as error:
-
-        print(
-            "❌ COLLECTOR: "
-            "5M candle error: "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True
-        )
-
-
-    # --------------------------------------------------------
-    # BUILD 15M CANDLE
-    # --------------------------------------------------------
-
-    try:
-
-        candles_15m = build_timeframe_candles(
-
-            timeframe="15m",
-
-            symbol=data["symbol"],
-
-            limit=500
-        )
-
-        if candles_15m:
-
-            print(
-                "🕯️ COLLECTOR: "
-                "15M candles updated: "
-                f"{len(candles_15m)}",
-                flush=True
-            )
-
-    except Exception as error:
-
-        print(
-            "❌ COLLECTOR: "
-            "15M candle error: "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True
-        )
-
-
-    # --------------------------------------------------------
-    # BUILD 1H CANDLE
-    # --------------------------------------------------------
-
-    try:
-
-        candles_1h = build_timeframe_candles(
-
-            timeframe="1h",
-
-            symbol=data["symbol"],
-
-            limit=500
-        )
-
-        if candles_1h:
-
-            print(
-                "🕯️ COLLECTOR: "
-                "1H candles updated: "
-                f"{len(candles_1h)}",
-                flush=True
-            )
-
-    except Exception as error:
-
-        print(
-            "❌ COLLECTOR: "
-            "1H candle error: "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True
-        )
-
-
-    print(
-        "✅ COLLECTOR: "
-        "Collection cycle finished.",
-        flush=True
+        "5-minute cycle finished.",
+        flush=True,
     )
 
 
@@ -753,38 +709,76 @@ def collect_once():
 def run_collector():
 
     print(
-        "🤖 COLLECTOR SERVICE STARTED",
-        flush=True
+        "🤖 MARKET COLLECTOR SERVICE STARTED",
+        flush=True,
     )
 
     print(
         f"⏱️ Collection interval: "
-        f"{COLLECT_INTERVAL} seconds",
-        flush=True
-    )
-
-    print(
-        "📊 Timeframes: "
-        "1m / 5m / 15m / 1h",
-        flush=True
+        f"{COLLECT_INTERVAL} seconds "
+        f"(5 minutes)",
+        flush=True,
     )
 
     print(
         "📡 Sources: "
-        "TGJU + Servix",
-        flush=True
+        "TGJU + World Gold + USD/Toman",
+        flush=True,
     )
 
     print(
-        f"⚖️ Maximum source difference: "
-        f"{MAX_SOURCE_DIFFERENCE_PERCENT}%",
-        flush=True
+        "💾 Storage: "
+        "market_snapshots",
+        flush=True,
     )
 
+    print(
+        "🕯️ Candles: "
+        "5m / 15m / 1h",
+        flush=True,
+    )
+
+    print(
+        "🚫 Servix: "
+        "disabled from 5-minute cycle",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # First collection immediately
+    # --------------------------------------------------------
+
+    try:
+
+        collect_once()
+
+    except Exception as error:
+
+        print(
+            "❌ INITIAL COLLECTOR ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
+        traceback.print_exc()
+
+    # --------------------------------------------------------
+    # Main loop
+    # --------------------------------------------------------
 
     while True:
 
         try:
+
+            print(
+                f"⏳ COLLECTOR: "
+                f"Waiting {COLLECT_INTERVAL} seconds...",
+                flush=True,
+            )
+
+            time.sleep(
+                COLLECT_INTERVAL
+            )
 
             collect_once()
 
@@ -792,31 +786,20 @@ def run_collector():
 
             print(
                 "❌ COLLECTOR ERROR:",
-                flush=True
+                flush=True,
             )
 
             print(
                 f"Type: {type(error).__name__}",
-                flush=True
+                flush=True,
             )
 
             print(
                 f"Message: {error}",
-                flush=True
+                flush=True,
             )
 
             traceback.print_exc()
-
-
-        print(
-            f"⏳ COLLECTOR: Waiting "
-            f"{COLLECT_INTERVAL} seconds...",
-            flush=True
-        )
-
-        time.sleep(
-            COLLECT_INTERVAL
-        )
 
 
 # ============================================================
