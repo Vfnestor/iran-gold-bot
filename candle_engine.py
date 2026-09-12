@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from database import (
     save_candle,
     get_candles,
+    get_tgju_price_points,
     get_tgju_price_points_range,
     get_latest_tgju_price_point,
     get_tgju_price_point_count,
@@ -704,7 +705,6 @@ def build_15m_from_5m(
             )
         )
 
-        # دقیقاً سه کندل کامل 5m
         if len(values) != 3:
             continue
 
@@ -856,7 +856,6 @@ def build_1h_from_5m(
             )
         )
 
-        # دقیقاً 12 کندل کامل 5m
         if len(values) != 12:
             continue
 
@@ -1172,20 +1171,12 @@ def build_timeframe_candles(
             f"Unsupported timeframe: {timeframe}"
         )
 
-    # --------------------------------------------------------
-    # 1M
-    # --------------------------------------------------------
-
     if timeframe == "1m":
 
         return get_recent_1m_candles(
             symbol=symbol,
             limit=limit,
         )
-
-    # --------------------------------------------------------
-    # BUILD BASE 5M
-    # --------------------------------------------------------
 
     five_minute_candles = (
         build_5m_candles_from_raw(
@@ -1198,10 +1189,6 @@ def build_timeframe_candles(
 
         return five_minute_candles
 
-    # --------------------------------------------------------
-    # 15M
-    # --------------------------------------------------------
-
     if timeframe == "15m":
 
         return build_15m_from_5m(
@@ -1209,10 +1196,6 @@ def build_timeframe_candles(
                 five_minute_candles,
             symbol=symbol,
         )
-
-    # --------------------------------------------------------
-    # 1H
-    # --------------------------------------------------------
 
     if timeframe == "1h":
 
@@ -1235,20 +1218,12 @@ def build_all_timeframes(
 
     results = {}
 
-    # --------------------------------------------------------
-    # 1M
-    # --------------------------------------------------------
-
     results["1m"] = (
         get_recent_1m_candles(
             symbol=symbol,
             limit=500,
         )
     )
-
-    # --------------------------------------------------------
-    # BUILD 5M ONCE
-    # --------------------------------------------------------
 
     five_minute_candles = (
         build_5m_candles_from_raw(
@@ -1261,10 +1236,6 @@ def build_all_timeframes(
         five_minute_candles
     )
 
-    # --------------------------------------------------------
-    # 15M
-    # --------------------------------------------------------
-
     results["15m"] = (
         build_15m_from_5m(
             five_minute_candles=
@@ -1272,10 +1243,6 @@ def build_all_timeframes(
             symbol=symbol,
         )
     )
-
-    # --------------------------------------------------------
-    # 1H
-    # --------------------------------------------------------
 
     results["1h"] = (
         build_1h_from_5m(
@@ -1351,10 +1318,6 @@ def diagnose_candle_engine():
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # RAW POINT COUNT
-    # --------------------------------------------------------
-
     try:
         raw_count = get_tgju_price_point_count(
             symbol=SYMBOL
@@ -1373,10 +1336,6 @@ def diagnose_candle_engine():
             f"{type(error).__name__}: {error}",
             flush=True,
         )
-
-    # --------------------------------------------------------
-    # LATEST RAW POINT
-    # --------------------------------------------------------
 
     try:
 
@@ -1405,10 +1364,6 @@ def diagnose_candle_engine():
             f"{type(error).__name__}: {error}",
             flush=True,
         )
-
-    # --------------------------------------------------------
-    # BUILD TIMEFRAMES
-    # --------------------------------------------------------
 
     for timeframe in (
         "5m",
