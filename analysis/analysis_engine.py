@@ -15,6 +15,27 @@ from analysis.live_analysis_adapter import (
 )
 
 # ============================================================
+# LIVE CANDLE PROVIDER
+# ============================================================
+
+def fetch_live_candles(
+    timeframe="5m",
+):
+    """
+    دریافت کندل‌های زنده از یک ساعت اخیر.
+
+    داده‌ها فقط در حافظه هستند و از جدول
+    gold_candles خوانده نمی‌شوند.
+    """
+
+    live_candles = get_live_analysis_candles()
+
+    return live_candles.get(
+        timeframe,
+        [],
+    )
+
+# ============================================================
 # CONFIG
 # ============================================================
 
@@ -2145,9 +2166,13 @@ def run_analysis():
         # 5M DATA
         # ----------------------------------------------------
 
-        candles_5m = fetch_candles(
+        candles_5m = fetch_live_candles(
             "5m",
-            200,
+        )
+        print(
+            "📡 LIVE 5M CANDLES:",
+            flush(candles_5m),
+            flush=True,
         )
 
         if len(candles_5m) < MIN_CANDLES_FOR_ANALYSIS:
