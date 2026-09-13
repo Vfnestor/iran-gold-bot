@@ -29,6 +29,15 @@ MAX_PRICE_RATIO = 1.30
 # ============================================================
 # HELPERS
 # ============================================================
+def get_live_analysis_candles(
+    window_minutes=LIVE_WINDOW_MINUTES
+):
+def get_live_candles(
+    window_minutes=LIVE_WINDOW_MINUTES
+):
+    return get_live_analysis_candles(
+        window_minutes=window_minutes
+    )
 
 def _safe_float(value):
     try:
