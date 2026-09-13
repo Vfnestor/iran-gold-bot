@@ -19,6 +19,29 @@ REQUEST_TIMEOUT = 15
 MAX_EXTERNAL_SCRIPTS = 30
 MAX_ENDPOINTS_TO_PRINT = 100
 
+# ------------------------------------------------------------
+# IMPORTANT:
+# The HTML chart currently contains a long historical series.
+# We must NOT feed that entire history into the intraday
+# candle builder.
+#
+# Only recent points are allowed to be saved as raw intraday
+# data.
+# ------------------------------------------------------------
+
+INTRADAY_SAVE_WINDOW_HOURS = 6
+
+# Maximum acceptable gap between consecutive points for a
+# series to be considered intraday.
+#
+# This does NOT create candles. It only protects the database
+# from historical/daily TGJU points.
+MAX_INTRADAY_GAP_SECONDS = 15 * 60
+
+# Minimum number of points required for an intraday segment.
+MIN_INTRADAY_POINTS = 2
+
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1076,8 +1099,9 @@ def extract_price_series(html):
     """
     استخراج سری‌های قیمت از chartDataهای TGJU.
 
-    این قسمت فعلاً همان parser قبلی است.
-    هدف این مرحله فقط پیدا کردن endpoint واقعی است.
+    توجه:
+    این تابع ممکن است همچنان کل history را استخراج کند.
+    اما قبل از ذخیره، فقط بخش intraday اخیر فیلتر می‌شود.
     """
 
     soup = BeautifulSoup(
@@ -1313,6 +1337,253 @@ def extract_price_series(html):
 
 
 # ============================================================
+# EXTRACT ONLY REAL RECENT INTRADAY POINTS
+# ============================================================
+
+def extract_recent_intraday_points(series):
+
+    """
+    از سری تاریخی TGJU فقط بخش واقعاً اخیر را جدا می‌کند.
+
+    هدف:
+        جلوگیری از ورود نقاط تاریخی به candle builder.
+
+    نکته:
+        این تابع candle نمی‌سازد.
+        فقط داده‌ی خام مناسب برای ذخیره را انتخاب می‌کند.
+    """
+
+    if not series:
+
+        return []
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    window_start = (
+        now
+        - timedelta(
+            hours=INTRADAY_SAVE_WINDOW_HOURS
+        )
+    )
+
+    recent = [
+        point
+        for point in series
+        if (
+            point["timestamp"] >= window_start
+            and point["timestamp"] <= now + timedelta(
+                minutes=2
+            )
+        )
+    ]
+
+    if len(recent) < MIN_INTRADAY_POINTS:
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            "⚠️ TGJU INTRADAY FILTER:",
+            flush=True,
+        )
+
+        print(
+            f"   historical points: {len(series)}",
+            flush=True,
+        )
+
+        print(
+            f"   recent points: {len(recent)}",
+            flush=True,
+        )
+
+        print(
+            "   ❌ Not enough recent points "
+            "for intraday storage.",
+            flush=True,
+        )
+
+        print(
+            "   Historical data will NOT be saved "
+            "as intraday data.",
+            flush=True,
+        )
+
+        return []
+
+    recent.sort(
+        key=lambda x: x["timestamp_ms"]
+    )
+
+    # --------------------------------------------------------
+    # Check consecutive gaps.
+    #
+    # If the recent data suddenly contains a large gap,
+    # we keep only the latest continuous segment.
+    # --------------------------------------------------------
+
+    segments = []
+    current_segment = [
+        recent[0]
+    ]
+
+    for previous, current in zip(
+        recent[:-1],
+        recent[1:],
+    ):
+
+        delta_seconds = (
+            current["timestamp_ms"]
+            - previous["timestamp_ms"]
+        ) / 1000
+
+        if (
+            delta_seconds > 0
+            and delta_seconds <= MAX_INTRADAY_GAP_SECONDS
+        ):
+
+            current_segment.append(
+                current
+            )
+
+        else:
+
+            if len(current_segment) >= MIN_INTRADAY_POINTS:
+
+                segments.append(
+                    current_segment
+                )
+
+            current_segment = [
+                current
+            ]
+
+    if len(current_segment) >= MIN_INTRADAY_POINTS:
+
+        segments.append(
+            current_segment
+        )
+
+    if not segments:
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            "⚠️ TGJU INTRADAY FILTER:",
+            flush=True,
+        )
+
+        print(
+            "   Recent points exist, "
+            "but they are not a continuous intraday series.",
+            flush=True,
+        )
+
+        print(
+            "   ❌ Nothing will be saved "
+            "to the intraday pipeline.",
+            flush=True,
+        )
+
+        return []
+
+    # --------------------------------------------------------
+    # Select the latest continuous segment.
+    # --------------------------------------------------------
+
+    selected = max(
+        segments,
+        key=lambda segment: segment[-1][
+            "timestamp_ms"
+        ],
+    )
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "✅ TGJU INTRADAY FILTER:",
+        flush=True,
+    )
+
+    print(
+        f"   source points: {len(series)}",
+        flush=True,
+    )
+
+    print(
+        f"   recent points: {len(recent)}",
+        flush=True,
+    )
+
+    print(
+        f"   selected points: {len(selected)}",
+        flush=True,
+    )
+
+    print(
+        f"   first: "
+        f"{selected[0]['timestamp'].isoformat()}",
+        flush=True,
+    )
+
+    print(
+        f"   last : "
+        f"{selected[-1]['timestamp'].isoformat()}",
+        flush=True,
+    )
+
+    intervals = []
+
+    for previous, current in zip(
+        selected[:-1],
+        selected[1:],
+    ):
+
+        delta_seconds = (
+            current["timestamp_ms"]
+            - previous["timestamp_ms"]
+        ) / 1000
+
+        if delta_seconds > 0:
+
+            intervals.append(
+                delta_seconds
+            )
+
+    if intervals:
+
+        print(
+            f"   avg interval: "
+            f"{sum(intervals) / len(intervals):.2f} sec",
+            flush=True,
+        )
+
+        print(
+            f"   min interval: "
+            f"{min(intervals):.2f} sec",
+            flush=True,
+        )
+
+        print(
+            f"   max interval: "
+            f"{max(intervals):.2f} sec",
+            flush=True,
+        )
+
+    return selected
+
+
+# ============================================================
 # PRINT SERIES DIAGNOSTIC
 # ============================================================
 
@@ -1460,14 +1731,36 @@ def save_intraday_series(series):
             "duplicates": 0,
         }
 
+    # --------------------------------------------------------
+    # CRITICAL SAFETY FILTER
+    # --------------------------------------------------------
+
+    safe_series = extract_recent_intraday_points(
+        series
+    )
+
+    if not safe_series:
+
+        print(
+            "🛑 TGJU: historical series blocked "
+            "from intraday database.",
+            flush=True,
+        )
+
+        return {
+            "received": len(series),
+            "saved": 0,
+            "duplicates": 0,
+        }
+
     result = save_tgju_price_points(
-        series,
+        safe_series,
         symbol="gold_18k",
     )
 
     print(
-        "💾 TGJU RAW SERIES: "
-        f"received={result['received']} "
+        "💾 TGJU RAW INTRADAY SERIES: "
+        f"received={len(safe_series)} "
         f"saved={result['saved']} "
         f"duplicates={result['duplicates']}",
         flush=True,
@@ -1499,12 +1792,8 @@ def get_gold_18k():
         html = response.text
 
         # ====================================================
-        # NEW DEBUG STEP
+        # ENDPOINT DISCOVERY
         # ====================================================
-        #
-        # فقط endpointها را پیدا می‌کند.
-        # هیچ endpoint جدیدی برای دریافت قیمت اجرا نمی‌شود.
-        #
 
         debug_tgju_endpoints(
             html,
@@ -1520,7 +1809,7 @@ def get_gold_18k():
         )
 
         # ====================================================
-        # INTRADAY SERIES
+        # PRICE SERIES
         # ====================================================
 
         series = extract_price_series(
@@ -1532,7 +1821,7 @@ def get_gold_18k():
         )
 
         # ====================================================
-        # SAVE RAW SERIES
+        # SAVE ONLY SAFE INTRADAY DATA
         # ====================================================
 
         save_intraday_series(
