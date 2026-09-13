@@ -1,11 +1,8 @@
-from __future__ import annotations
-
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone, timedelta
 
 from database import (
     get_tgju_price_points,
-    get_latest_market_snapshot,
+    get_latest_tgju_price_point,
 )
 
 
@@ -13,144 +10,60 @@ from database import (
 # CONFIG
 # ============================================================
 
-# برای ساخت حداقل 25 کندل 5 دقیقه‌ای،
-# یک ساعت کافی نیست.
-WINDOW_MINUTES = 180
+SYMBOL = "gold_18k"
 
-TIMEFRAMES = {
-    "5m": 5,
-    "15m": 15,
-    "1h": 60,
-}
+# حداقل تعداد کندل برای اینکه تحلیل اصلاً شروع شود
+MIN_CANDLES_FOR_ANALYSIS = 1
 
-# حداقل کندل لازم برای تحلیل در analysis_engine.py
-MIN_5M_CANDLES = 25
+# تعداد کندل برای اعتماد کامل به تحلیل
+RELIABLE_CANDLE_COUNT = 25
 
-# محدوده مجاز قیمت نسبت به قیمت فعلی 18K
-#
-# اگر قیمت واقعی مثلاً:
-# 239,168,000 تومان باشد
-#
-# داده‌ای مثل:
-# 5,094,500
-#
-# به صورت خودکار رد می‌شود.
+# فقط داده‌های این بازه وارد موتور Live Candle می‌شوند
+LIVE_WINDOW_MINUTES = 180
+
+# محدوده منطقی قیمت نسبت به قیمت فعلی
 MIN_PRICE_RATIO = 0.70
 MAX_PRICE_RATIO = 1.30
 
 
 # ============================================================
-# SAFE HELPERS
+# HELPERS
 # ============================================================
 
-def _to_float(
-    value: Any,
-) -> Optional[float]:
-    """
-    تبدیل امن مقدار به float.
-    """
-
+def _safe_float(value):
     try:
         if value is None:
             return None
 
-        if isinstance(value, str):
-            value = (
-                value
-                .replace(",", "")
-                .replace("٬", "")
-                .replace(" ", "")
-            )
-
-        number = float(value)
-
-        if number <= 0:
+        if isinstance(value, bool):
             return None
 
-        return number
+        return float(value)
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    except Exception:
         return None
 
 
-# ============================================================
-# TIMESTAMP NORMALIZATION
-# ============================================================
-
-def _normalize_timestamp(
-    value: Any,
-) -> Optional[datetime]:
+def _safe_timestamp(value):
     """
-    نرمال‌سازی timestamp به UTC.
+    تبدیل timestampهای مختلف به datetime timezone-aware.
     """
-
-    if isinstance(
-        value,
-        datetime,
-    ):
-        if value.tzinfo is None:
-            return value.replace(
-                tzinfo=timezone.utc
-            )
-
-        return value.astimezone(
-            timezone.utc
-        )
-
-    if isinstance(
-        value,
-        (int, float),
-    ):
-        try:
-            number = float(value)
-
-            if number > 10_000_000_000:
-                number /= 1000.0
-
-            return datetime.fromtimestamp(
-                number,
-                tz=timezone.utc,
-            )
-
-        except Exception:
-            return None
 
     if value is None:
         return None
 
-    text = str(value).strip()
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
 
-    if not text:
-        return None
-
-    try:
-        parsed = datetime.fromisoformat(
-            text.replace(
-                "Z",
-                "+00:00",
-            )
-        )
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(
-                tzinfo=timezone.utc
-            )
-
-        return parsed.astimezone(
-            timezone.utc
-        )
-
-    except Exception:
-        pass
+        return value.astimezone(timezone.utc)
 
     try:
-        number = float(text)
+        number = float(value)
 
+        # milliseconds
         if number > 10_000_000_000:
-            number /= 1000.0
+            number /= 1000
 
         return datetime.fromtimestamp(
             number,
@@ -161,285 +74,404 @@ def _normalize_timestamp(
         return None
 
 
-# ============================================================
-# CURRENT 18K PRICE
-# ============================================================
-
-def _get_current_18k_price() -> Optional[float]:
+def _extract_value(item, key, default=None):
     """
-    دریافت آخرین قیمت معتبر طلای 18 عیار به تومان.
+    خواندن امن مقدار از dict / tuple / object.
 
-    اولویت:
-    1. latest market snapshot
-    2. آخرین TGJU point
+    این تابع برای جلوگیری از خطای:
+        'tuple' object has no attribute 'get'
+    استفاده می‌شود.
     """
 
-    # --------------------------------------------------------
-    # 1. Market snapshot
-    # --------------------------------------------------------
+    if item is None:
+        return default
+
+    # dict
+    if isinstance(item, dict):
+        return item.get(key, default)
+
+    # object
+    if hasattr(item, key):
+        try:
+            return getattr(item, key)
+        except Exception:
+            pass
+
+    # tuple/list
+    if isinstance(item, (tuple, list)):
+
+        # ترتیب‌های رایج:
+        # (timestamp, price)
+        # (price, timestamp)
+
+        if key in ("timestamp", "time", "created_at"):
+            if len(item) >= 1:
+                return item[0]
+
+        if key in ("price", "value"):
+            if len(item) >= 2:
+                return item[1]
+
+    return default
+
+
+def _normalize_point(item):
+    """
+    تبدیل یک رکورد دیتابیس به ساختار استاندارد:
+
+        {
+            timestamp: datetime,
+            price: float
+        }
+    """
+
+    timestamp = _extract_value(
+        item,
+        "timestamp",
+    )
+
+    if timestamp is None:
+        timestamp = _extract_value(
+            item,
+            "time",
+        )
+
+    if timestamp is None:
+        timestamp = _extract_value(
+            item,
+            "created_at",
+        )
+
+    price = _extract_value(
+        item,
+        "price",
+    )
+
+    if price is None:
+        price = _extract_value(
+            item,
+            "value",
+        )
+
+    timestamp = _safe_timestamp(
+        timestamp
+    )
+
+    price = _safe_float(
+        price
+    )
+
+    if timestamp is None or price is None:
+        return None
+
+    if price <= 0:
+        return None
+
+    return {
+        "timestamp": timestamp,
+        "price": price,
+    }
+
+
+# ============================================================
+# MARKET SNAPSHOT
+# ============================================================
+
+def _get_snapshot_price():
+    """
+    دریافت قیمت از market snapshot.
+
+    snapshot ممکن است dict یا tuple باشد.
+    بنابراین دیگر مستقیماً .get() روی آن اجرا نمی‌کنیم.
+    """
 
     try:
-        snapshot = get_latest_market_snapshot()
+        snapshot = get_latest_tgju_price_point(
+            symbol=SYMBOL
+        )
 
-        if snapshot:
-            candidates = [
-                snapshot.get("gold_18k_toman"),
-                snapshot.get("gold_18k"),
-                snapshot.get("gold_price_toman"),
-            ]
+    except TypeError:
 
-            for value in candidates:
-                price = _to_float(value)
+        try:
+            snapshot = get_latest_tgju_price_point(
+                SYMBOL
+            )
 
-                if price is not None:
-                    return price
+        except Exception as error:
+            print(
+                "⚠️ LIVE CANDLES: "
+                f"market snapshot unavailable: "
+                f"{type(error).__name__}({error!r})",
+                flush=True,
+            )
 
-    except Exception as exc:
+            return None
+
+    except Exception as error:
+
         print(
-            "⚠️ LIVE CANDLES: market snapshot unavailable:",
-            repr(exc),
+            "⚠️ LIVE CANDLES: "
+            f"market snapshot unavailable: "
+            f"{type(error).__name__}({error!r})",
             flush=True,
         )
 
+        return None
+
+    if snapshot is None:
+        return None
+
     # --------------------------------------------------------
-    # 2. Latest TGJU point
+    # dict
     # --------------------------------------------------------
 
-    try:
-        rows = get_tgju_price_points(
-            symbol="gold_18k",
-            limit=1,
-        )
+    if isinstance(snapshot, dict):
 
-        if rows:
-            row = rows[0]
+        for key in (
+            "price",
+            "value",
+            "last_price",
+            "current_price",
+        ):
 
-            # expected:
-            # timestamp_ms, timestamp, price
-            if isinstance(row, (list, tuple)):
-                if len(row) >= 3:
-                    price = _to_float(
-                        row[2]
-                    )
+            price = _safe_float(
+                snapshot.get(key)
+            )
 
-                    if price is not None:
-                        return price
+            if price is not None:
+                return price
 
-            elif isinstance(row, dict):
-                price = _to_float(
-                    row.get("price")
-                    or row.get("value")
-                    or row.get("close")
+    # --------------------------------------------------------
+    # tuple / list
+    # --------------------------------------------------------
+
+    if isinstance(snapshot, (tuple, list)):
+
+        # حالت‌های رایج:
+        #
+        # (timestamp, price)
+        # (price, timestamp)
+        #
+        for value in snapshot:
+
+            price = _safe_float(
+                value
+            )
+
+            if price is None:
+                continue
+
+            # قیمت منطقی طلای 18K
+            if (
+                50_000_000
+                <= price
+                <= 1_000_000_000
+            ):
+                return price
+
+    # --------------------------------------------------------
+    # object
+    # --------------------------------------------------------
+
+    for key in (
+        "price",
+        "value",
+        "last_price",
+        "current_price",
+    ):
+
+        try:
+
+            price = _safe_float(
+                getattr(
+                    snapshot,
+                    key,
+                    None,
                 )
+            )
 
-                if price is not None:
-                    return price
+            if price is not None:
+                return price
 
-    except Exception as exc:
-        print(
-            "⚠️ LIVE CANDLES: latest TGJU point unavailable:",
-            repr(exc),
-            flush=True,
-        )
+        except Exception:
+            continue
 
     return None
 
 
 # ============================================================
-# DATABASE POINT NORMALIZATION
+# PRICE REFERENCE
 # ============================================================
 
-def _normalize_database_points(
-    rows: List[Any],
-    current_price: Optional[float],
-) -> List[Dict[str, Any]]:
+def _get_price_reference(points):
     """
-    تبدیل نقاط database به ساختار استاندارد.
+    تعیین قیمت مرجع.
 
-    ساختار نهایی:
-
-    {
-        timestamp,
-        timestamp_ms,
-        price
-    }
-
-    فقط قیمت‌های معتبر 18K پذیرفته می‌شوند.
+    اول market snapshot
+    سپس آخرین نقطه معتبر TGJU
     """
 
-    points: List[
-        Dict[str, Any]
-    ] = []
+    snapshot_price = _get_snapshot_price()
+
+    if snapshot_price is not None:
+
+        print(
+            f"💰 LIVE PRICE REFERENCE: "
+            f"{snapshot_price:,.0f} TOMAN",
+            flush=True,
+        )
+
+        return snapshot_price
+
+    if points:
+
+        price = points[-1]["price"]
+
+        print(
+            f"💰 LIVE PRICE REFERENCE: "
+            f"{price:,.0f} TOMAN "
+            f"(latest TGJU point)",
+            flush=True,
+        )
+
+        return price
+
+    return None
+
+
+# ============================================================
+# LOAD TGJU POINTS
+# ============================================================
+
+def _load_valid_points():
+
+    print(
+        "📡 LIVE CANDLES: "
+        "reading stored TGJU points...",
+        flush=True,
+    )
+
+    try:
+
+        rows = get_tgju_price_points(
+            symbol=SYMBOL,
+            limit=5000,
+        )
+
+    except TypeError:
+
+        rows = get_tgju_price_points(
+            SYMBOL,
+            5000,
+        )
+
+    except Exception as error:
+
+        print(
+            "🔴 LIVE CANDLES: "
+            f"database read failed: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
+        return []
+
+    if rows is None:
+        rows = []
+
+    print(
+        f"📊 DATABASE TGJU RAW ROWS: "
+        f"{len(rows)}",
+        flush=True,
+    )
+
+    normalized = []
 
     rejected_timestamp = 0
     rejected_price = 0
-    rejected_outlier = 0
 
-    # --------------------------------------------------------
-    # Calculate acceptable price range
-    # --------------------------------------------------------
-
-    min_price = None
-    max_price = None
-
-    if current_price is not None:
-        min_price = (
-            current_price
-            * MIN_PRICE_RATIO
-        )
-
-        max_price = (
-            current_price
-            * MAX_PRICE_RATIO
-        )
-
-        print(
-            "💰 LIVE PRICE REFERENCE:",
-            f"{current_price:,.0f}",
-            "TOMAN",
-            flush=True,
-        )
-
-        print(
-            "🛡️ VALID PRICE RANGE:",
-            f"{min_price:,.0f}",
-            "→",
-            f"{max_price:,.0f}",
-            "TOMAN",
-            flush=True,
-        )
-
-    # --------------------------------------------------------
-    # Process database rows
-    # --------------------------------------------------------
+    now = datetime.now(
+        timezone.utc
+    )
 
     for row in rows:
 
-        timestamp_value = None
-        price_value = None
-
-        # ----------------------------------------------------
-        # Tuple / list
-        # ----------------------------------------------------
-
-        if isinstance(
-            row,
-            (list, tuple),
-        ):
-            # database.py:
-            # (timestamp_ms, timestamp, price)
-
-            if len(row) >= 3:
-                timestamp_value = row[1]
-                price_value = row[2]
-
-        # ----------------------------------------------------
-        # Dict
-        # ----------------------------------------------------
-
-        elif isinstance(
-            row,
-            dict,
-        ):
-            timestamp_value = (
-                row.get("timestamp")
-                or row.get("time")
-                or row.get("datetime")
-                or row.get("created_at")
-            )
-
-            price_value = (
-                row.get("price")
-                or row.get("value")
-                or row.get("close")
-                or row.get("last")
-            )
-
-        else:
-            continue
-
-        # ----------------------------------------------------
-        # Timestamp
-        # ----------------------------------------------------
-
-        timestamp = _normalize_timestamp(
-            timestamp_value
+        point = _normalize_point(
+            row
         )
 
-        if timestamp is None:
+        if point is None:
+
+            # تشخیص تقریبی برای لاگ
+            raw_timestamp = _extract_value(
+                row,
+                "timestamp",
+            )
+
+            raw_price = _extract_value(
+                row,
+                "price",
+            )
+
+            if (
+                _safe_timestamp(
+                    raw_timestamp
+                )
+                is None
+            ):
+                rejected_timestamp += 1
+
+            elif (
+                _safe_float(
+                    raw_price
+                )
+                is None
+            ):
+                rejected_price += 1
+
+            else:
+                rejected_price += 1
+
+            continue
+
+        timestamp = point[
+            "timestamp"
+        ]
+
+        price = point[
+            "price"
+        ]
+
+        # ----------------------------------------------------
+        # timestamp validation
+        # ----------------------------------------------------
+
+        if timestamp > (
+            now + timedelta(minutes=5)
+        ):
+
             rejected_timestamp += 1
             continue
 
         # ----------------------------------------------------
-        # Price
-        # ----------------------------------------------------
-
-        price = _to_float(
-            price_value
-        )
-
-        if price is None:
-            rejected_price += 1
-            continue
-
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Reject obviously wrong series.
+        # absolute price validation
         # ----------------------------------------------------
 
         if (
-            min_price is not None
-            and max_price is not None
+            price < 50_000_000
+            or price > 1_000_000_000
         ):
-            if (
-                price < min_price
-                or price > max_price
-            ):
-                rejected_outlier += 1
-                continue
 
-        # ----------------------------------------------------
-        # Accept
-        # ----------------------------------------------------
+            rejected_price += 1
+            continue
 
-        points.append(
-            {
-                "timestamp": timestamp,
-                "timestamp_ms": int(
-                    timestamp.timestamp()
-                    * 1000
-                ),
-                "price": price,
-            }
+        normalized.append(
+            point
         )
 
     # --------------------------------------------------------
-    # Sort chronologically
+    # Sort
     # --------------------------------------------------------
-
-    points.sort(
-        key=lambda item: item[
-            "timestamp"
-        ]
-    )
-
-    # --------------------------------------------------------
-    # Remove duplicate timestamps
-    # --------------------------------------------------------
-
-    unique: Dict[
-        int,
-        Dict[str, Any],
-    ] = {}
-
-    for point in points:
-        unique[
-            point["timestamp_ms"]
-        ] = point
-
-    normalized = list(
-        unique.values()
-    )
 
     normalized.sort(
         key=lambda item: item[
@@ -447,115 +479,171 @@ def _normalize_database_points(
         ]
     )
 
-    # --------------------------------------------------------
-    # Diagnostics
-    # --------------------------------------------------------
-
     print(
-        "📊 DATABASE TGJU RAW ROWS:",
-        len(rows),
+        f"📊 VALID 18K POINTS: "
+        f"{len(normalized)}",
         flush=True,
     )
 
     print(
-        "📊 VALID 18K POINTS:",
-        len(normalized),
+        f"⚠️ REJECTED TIMESTAMP: "
+        f"{rejected_timestamp}",
         flush=True,
     )
 
     print(
-        "⚠️ REJECTED TIMESTAMP:",
-        rejected_timestamp,
+        f"⚠️ REJECTED PRICE: "
+        f"{rejected_price}",
         flush=True,
     )
-
-    print(
-        "⚠️ REJECTED PRICE:",
-        rejected_price,
-        flush=True,
-    )
-
-    print(
-        "🛡️ REJECTED OUTLIERS:",
-        rejected_outlier,
-        flush=True,
-    )
-
-    if normalized:
-        print(
-            "🕐 FIRST VALID POINT:",
-            normalized[0]["timestamp"].isoformat(),
-            flush=True,
-        )
-
-        print(
-            "🕐 LAST VALID POINT:",
-            normalized[-1]["timestamp"].isoformat(),
-            flush=True,
-        )
-
-        print(
-            "💰 LAST VALID PRICE:",
-            f"{normalized[-1]['price']:,.0f}",
-            "TOMAN",
-            flush=True,
-        )
 
     return normalized
 
 
 # ============================================================
-# CANDLE BOUNDARY
+# FILTER OUTLIERS
 # ============================================================
 
-def _floor_timestamp(
-    timestamp: datetime,
-    minutes: int,
-) -> datetime:
-    """
-    قرار دادن timestamp روی ابتدای کندل.
-    """
-
-    timestamp = timestamp.astimezone(
-        timezone.utc
-    )
-
-    minute = (
-        timestamp.minute
-        - (
-            timestamp.minute
-            % minutes
-        )
-    )
-
-    return timestamp.replace(
-        minute=minute,
-        second=0,
-        microsecond=0,
-    )
-
-
-# ============================================================
-# BUILD CANDLES
-# ============================================================
-
-def _build_candles(
-    points: List[Dict[str, Any]],
-    timeframe_minutes: int,
-) -> List[Dict[str, Any]]:
-    """
-    ساخت کندل در RAM.
-
-    هیچ Database operation ندارد.
-    """
+def _filter_outliers(
+    points,
+    reference_price,
+):
 
     if not points:
         return []
 
-    buckets: Dict[
-        datetime,
-        List[Dict[str, Any]],
-    ] = {}
+    if reference_price is None:
+        return points
+
+    min_price = (
+        reference_price
+        * MIN_PRICE_RATIO
+    )
+
+    max_price = (
+        reference_price
+        * MAX_PRICE_RATIO
+    )
+
+    print(
+        f"🛡️ VALID PRICE RANGE: "
+        f"{min_price:,.0f} → "
+        f"{max_price:,.0f} TOMAN",
+        flush=True,
+    )
+
+    valid = []
+    rejected = 0
+
+    for point in points:
+
+        price = point[
+            "price"
+        ]
+
+        if (
+            price < min_price
+            or price > max_price
+        ):
+
+            rejected += 1
+            continue
+
+        valid.append(
+            point
+        )
+
+    print(
+        f"🛡️ REJECTED OUTLIERS: "
+        f"{rejected}",
+        flush=True,
+    )
+
+    return valid
+
+
+# ============================================================
+# LIVE WINDOW
+# ============================================================
+
+def _apply_live_window(points):
+
+    if not points:
+        return []
+
+    last_timestamp = points[-1][
+        "timestamp"
+    ]
+
+    window_start = (
+        last_timestamp
+        - timedelta(
+            minutes=LIVE_WINDOW_MINUTES
+        )
+    )
+
+    print(
+        f"⏱️ LIVE WINDOW: "
+        f"{window_start.isoformat()} → "
+        f"{last_timestamp.isoformat()}",
+        flush=True,
+    )
+
+    result = [
+        point
+        for point in points
+        if (
+            window_start
+            <= point["timestamp"]
+            <= last_timestamp
+        )
+    ]
+
+    print(
+        f"📊 VALID POINTS IN WINDOW: "
+        f"{len(result)}",
+        flush=True,
+    )
+
+    return result
+
+
+# ============================================================
+# CANDLE BUILDER
+# ============================================================
+
+def _floor_timestamp(
+    timestamp,
+    minutes,
+):
+
+    timestamp = timestamp.replace(
+        second=0,
+        microsecond=0,
+    )
+
+    minute = (
+        timestamp.minute
+    )
+
+    floored = (
+        minute
+        - (
+            minute % minutes
+        )
+    )
+
+    return timestamp.replace(
+        minute=floored
+    )
+
+
+def _build_candles(
+    points,
+    interval_minutes,
+):
+
+    buckets = {}
 
     for point in points:
 
@@ -563,363 +651,415 @@ def _build_candles(
             "timestamp"
         ]
 
-        bucket = _floor_timestamp(
+        bucket_time = _floor_timestamp(
             timestamp,
-            timeframe_minutes,
+            interval_minutes,
         )
 
-        buckets.setdefault(
-            bucket,
-            [],
-        ).append(point)
+        if bucket_time not in buckets:
 
-    candles: List[
-        Dict[str, Any]
-    ] = []
-
-    now = datetime.now(
-        timezone.utc
-    )
-
-    timeframe_delta = timedelta(
-        minutes=timeframe_minutes
-    )
-
-    for bucket in sorted(
-        buckets.keys()
-    ):
-
-        candle_end = (
-            bucket
-            + timeframe_delta
-        )
-
-        # فقط کندل کاملاً بسته
-        if candle_end > now:
-            continue
-
-        bucket_points = buckets[
-            bucket
-        ]
-
-        bucket_points.sort(
-            key=lambda item: item[
-                "timestamp"
-            ]
-        )
-
-        prices = [
-            point["price"]
-            for point in bucket_points
-        ]
-
-        if not prices:
-            continue
-
-        candles.append(
-            {
-                "timestamp": bucket,
-                "timestamp_ms": int(
-                    bucket.timestamp()
-                    * 1000
-                ),
-                "open": prices[0],
-                "high": max(prices),
-                "low": min(prices),
-                "close": prices[-1],
-                "volume": None,
-                "timeframe": (
-                    f"{timeframe_minutes}m"
-                ),
-                "source": "tgju_live",
+            buckets[
+                bucket_time
+            ] = {
+                "timestamp": bucket_time,
+                "open": point["price"],
+                "high": point["price"],
+                "low": point["price"],
+                "close": point["price"],
+                "volume": 1,
             }
-        )
+
+        else:
+
+            candle = buckets[
+                bucket_time
+            ]
+
+            price = point[
+                "price"
+            ]
+
+            candle["high"] = max(
+                candle["high"],
+                price,
+            )
+
+            candle["low"] = min(
+                candle["low"],
+                price,
+            )
+
+            candle["close"] = price
+
+            candle["volume"] += 1
+
+    candles = list(
+        buckets.values()
+    )
+
+    candles.sort(
+        key=lambda item: item[
+            "timestamp"
+        ]
+    )
 
     return candles
 
 
 # ============================================================
-# LIVE CANDLES
+# ANALYSIS STATUS
 # ============================================================
 
-def get_live_candles(
-    window_minutes: int = WINDOW_MINUTES,
-) -> Dict[
-    str,
-    List[Dict[str, Any]],
-]:
-    """
-    ساخت کندل‌های زنده 18K از داده‌های معتبر ذخیره‌شده.
+def _analysis_status(
+    candle_count,
+):
 
-    مسیر:
+    if candle_count < MIN_CANDLES_FOR_ANALYSIS:
 
-    TGJU CALL5
-        ↓
-    tgju_price_points
-        ↓
-    price validation
-        ↓
-    live window
-        ↓
-    5m / 15m / 1h
+        return {
+            "can_analyze": False,
+            "reliable": False,
+            "status": "insufficient_data",
+            "status_fa": "داده کافی برای تحلیل وجود ندارد",
+            "candle_count": candle_count,
+            "required_for_reliable": RELIABLE_CANDLE_COUNT,
+        }
 
-    هیچ gold-chart / geram18 مستقیماً خوانده نمی‌شود.
-    """
+    if candle_count < RELIABLE_CANDLE_COUNT:
 
-    print(
-        "📡 LIVE CANDLES: reading stored TGJU points...",
-        flush=True,
-    )
+        return {
+            "can_analyze": True,
+            "reliable": False,
+            "status": "unreliable",
+            "status_fa": "⚠️ تحلیل غیر قابل اعتماد",
+            "candle_count": candle_count,
+            "required_for_reliable": RELIABLE_CANDLE_COUNT,
+        }
 
-    # --------------------------------------------------------
-    # 1. Current valid 18K price
-    # --------------------------------------------------------
+    return {
+        "can_analyze": True,
+        "reliable": True,
+        "status": "reliable",
+        "status_fa": "✅ تحلیل قابل اعتماد",
+        "candle_count": candle_count,
+        "required_for_reliable": RELIABLE_CANDLE_COUNT,
+    }
 
-    current_price = (
-        _get_current_18k_price()
-    )
 
-    if current_price is None:
-        raise RuntimeError(
-            "Could not determine current "
-            "18K gold price."
-        )
+# ============================================================
+# MAIN
+# ============================================================
 
-    # --------------------------------------------------------
-    # 2. Read TGJU points
-    #
-    # 180 minutes + safety margin
-    # --------------------------------------------------------
+def get_live_analysis_candles():
 
-    requested_limit = 5000
+    points = _load_valid_points()
 
-    try:
-        rows = get_tgju_price_points(
-            symbol="gold_18k",
-            limit=requested_limit,
-        )
+    if not points:
 
-    except Exception as exc:
         print(
-            "❌ LIVE CANDLES: database read failed:",
-            repr(exc),
+            "ℹ️ ANALYSIS: "
+            "no valid TGJU points.",
             flush=True,
         )
 
-        raise RuntimeError(
-            "Could not read TGJU price points."
-        ) from exc
+        return {
+            "5m": [],
+            "15m": [],
+            "1h": [],
+            "analysis": _analysis_status(0),
+            "can_analyze": False,
+            "reliable": False,
+            "reliability": "unreliable",
+            "reliability_text": (
+                "داده کافی برای تحلیل وجود ندارد"
+            ),
+        }
 
-    if not rows:
-        raise RuntimeError(
-            "No TGJU price points available."
-        )
+    # ========================================================
+    # PRICE REFERENCE
+    # ========================================================
 
-    # --------------------------------------------------------
-    # 3. Normalize + validate
-    # --------------------------------------------------------
+    reference_price = _get_price_reference(
+        points
+    )
 
-    points = _normalize_database_points(
-        rows,
-        current_price,
+    if reference_price is None:
+
+        reference_price = points[-1][
+            "price"
+        ]
+
+    # ========================================================
+    # OUTLIER FILTER
+    # ========================================================
+
+    points = _filter_outliers(
+        points,
+        reference_price,
     )
 
     if not points:
-        raise RuntimeError(
-            "No valid 18K TGJU points "
-            "remain after price validation."
+
+        print(
+            "🛑 ANALYSIS: "
+            "all points rejected.",
+            flush=True,
         )
 
-    # --------------------------------------------------------
-    # 4. Determine latest point
-    # --------------------------------------------------------
+        return {
+            "5m": [],
+            "15m": [],
+            "1h": [],
+            "analysis": _analysis_status(0),
+            "can_analyze": False,
+            "reliable": False,
+            "reliability": "unreliable",
+            "reliability_text": (
+                "داده معتبر برای تحلیل وجود ندارد"
+            ),
+        }
 
-    latest_timestamp = points[-1][
-        "timestamp"
-    ]
+    # ========================================================
+    # DIAGNOSTIC
+    # ========================================================
 
-    window_start = (
-        latest_timestamp
-        - timedelta(
-            minutes=window_minutes
-        )
-    )
-
-    recent_points = [
-        point
-        for point in points
-        if (
-            point["timestamp"]
-            >= window_start
-        )
-    ]
+    first = points[0]
+    last = points[-1]
 
     print(
-        "⏱️ LIVE WINDOW:",
-        window_start.isoformat(),
-        "→",
-        latest_timestamp.isoformat(),
+        f"🕐 FIRST VALID POINT: "
+        f"{first['timestamp'].isoformat()}",
         flush=True,
     )
 
     print(
-        "📊 VALID POINTS IN WINDOW:",
-        len(recent_points),
+        f"🕐 LAST VALID POINT: "
+        f"{last['timestamp'].isoformat()}",
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # 5. Build candles
-    # --------------------------------------------------------
+    print(
+        f"💰 LAST VALID PRICE: "
+        f"{last['price']:,.0f} TOMAN",
+        flush=True,
+    )
+
+    # ========================================================
+    # LIVE WINDOW
+    # ========================================================
+
+    points = _apply_live_window(
+        points
+    )
+
+    if not points:
+
+        return {
+            "5m": [],
+            "15m": [],
+            "1h": [],
+            "analysis": _analysis_status(0),
+            "can_analyze": False,
+            "reliable": False,
+            "reliability": "unreliable",
+            "reliability_text": (
+                "داده کافی برای تحلیل وجود ندارد"
+            ),
+        }
+
+    # ========================================================
+    # BUILD CANDLES
+    # ========================================================
 
     candles_5m = _build_candles(
-        recent_points,
-        TIMEFRAMES["5m"],
+        points,
+        5,
     )
 
     candles_15m = _build_candles(
-        recent_points,
-        TIMEFRAMES["15m"],
+        points,
+        15,
     )
 
     candles_1h = _build_candles(
-        recent_points,
-        TIMEFRAMES["1h"],
+        points,
+        60,
     )
 
-    # --------------------------------------------------------
-    # 6. Diagnostics
-    # --------------------------------------------------------
+    # ========================================================
+    # DIAGNOSTIC
+    # ========================================================
 
     print(
-        "🕯️ LIVE CANDLES:",
-        f"5m={len(candles_5m)}",
-        f"15m={len(candles_15m)}",
+        f"🕯️ LIVE CANDLES: "
+        f"5m={len(candles_5m)} "
+        f"15m={len(candles_15m)} "
         f"1h={len(candles_1h)}",
         flush=True,
     )
 
-    # --------------------------------------------------------
-    # 5m diagnostics
-    # --------------------------------------------------------
-
     if candles_5m:
 
         print(
-            "🕯️ 5M FIRST:",
-            candles_5m[0][
-                "timestamp"
-            ].isoformat(),
+            f"🕯️ 5M FIRST: "
+            f"{candles_5m[0]['timestamp'].isoformat()}",
             flush=True,
         )
 
         print(
-            "🕯️ 5M LAST:",
-            candles_5m[-1][
-                "timestamp"
-            ].isoformat(),
+            f"🕯️ 5M LAST: "
+            f"{candles_5m[-1]['timestamp'].isoformat()}",
             flush=True,
         )
 
         print(
-            "💰 5M LAST CLOSE:",
-            f"{candles_5m[-1]['close']:,.0f}",
-            "TOMAN",
+            f"💰 5M LAST CLOSE: "
+            f"{candles_5m[-1]['close']:,.0f} TOMAN",
             flush=True,
         )
 
-    # --------------------------------------------------------
-    # 7. Analysis readiness
-    # --------------------------------------------------------
+    # ========================================================
+    # ANALYSIS STATUS
+    # ========================================================
 
-    if len(candles_5m) < MIN_5M_CANDLES:
+    analysis_status = _analysis_status(
+        len(candles_5m)
+    )
+
+    if not analysis_status[
+        "can_analyze"
+    ]:
 
         print(
-            "ℹ️ ANALYSIS: not enough 5m candles",
-            f"({len(candles_5m)}/{MIN_5M_CANDLES})",
+            f"ℹ️ ANALYSIS: "
+            f"not enough 5m candles "
+            f"({len(candles_5m)}/"
+            f"{RELIABLE_CANDLE_COUNT})",
+            flush=True,
+        )
+
+    elif not analysis_status[
+        "reliable"
+    ]:
+
+        print(
+            f"⚠️ ANALYSIS: "
+            f"running with only "
+            f"{len(candles_5m)} "
+            f"5m candles "
+            f"(reliable at "
+            f"{RELIABLE_CANDLE_COUNT})",
             flush=True,
         )
 
     else:
 
         print(
-            "✅ ANALYSIS: enough 5m candles",
-            f"({len(candles_5m)}/{MIN_5M_CANDLES})",
+            f"✅ ANALYSIS: "
+            f"{len(candles_5m)} "
+            f"5m candles — reliable",
             flush=True,
         )
 
-    # --------------------------------------------------------
-    # 8. Return
-    # --------------------------------------------------------
+    # ========================================================
+    # RESULT
+    # ========================================================
 
-    return {
+    result = {
         "5m": candles_5m,
         "15m": candles_15m,
         "1h": candles_1h,
+
+        # ----------------------------------------------------
+        # analysis metadata
+        # ----------------------------------------------------
+
+        "analysis": analysis_status,
+
+        "can_analyze": analysis_status[
+            "can_analyze"
+        ],
+
+        "reliable": analysis_status[
+            "reliable"
+        ],
+
+        "reliability": (
+            "reliable"
+            if analysis_status["reliable"]
+            else "unreliable"
+        ),
+
+        "reliability_text": analysis_status[
+            "status_fa"
+        ],
+
+        "candle_count": len(
+            candles_5m
+        ),
+
+        "required_for_reliable": (
+            RELIABLE_CANDLE_COUNT
+        ),
+
+        # ----------------------------------------------------
+        # price
+        # ----------------------------------------------------
+
+        "price": reference_price,
+
+        "current_price": reference_price,
+
+        "symbol": SYMBOL,
+
+        "currency": "IRR",
+
+        "source": "tgju",
+
+        "generated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
     }
 
+    print(
+        f"📡 LIVE 5M CANDLES: "
+        f"{len(candles_5m)}",
+        flush=True,
+    )
 
-# ============================================================
-# DIAGNOSTIC
-# ============================================================
-
-def get_live_candle_diagnostic(
-    candles: Dict[
-        str,
-        List[Dict[str, Any]],
-    ],
-) -> Dict[str, Any]:
-    """
-    وضعیت کندل‌های زنده.
-    """
-
-    result: Dict[
-        str,
-        Any,
-    ] = {}
-
-    for timeframe in (
-        "5m",
-        "15m",
-        "1h",
+    if (
+        analysis_status["can_analyze"]
+        and not analysis_status["reliable"]
     ):
 
-        values = candles.get(
-            timeframe,
-            [],
+        print(
+            "⚠️ RELIABILITY: "
+            "UNRELIABLE — "
+            f"{len(candles_5m)}/"
+            f"{RELIABLE_CANDLE_COUNT} candles",
+            flush=True,
         )
 
-        result[timeframe] = {
-            "count": len(values),
-            "first": (
-                values[0][
-                    "timestamp"
-                ].isoformat()
-                if values
-                else None
-            ),
-            "last": (
-                values[-1][
-                    "timestamp"
-                ].isoformat()
-                if values
-                else None
-            ),
-        }
+    elif analysis_status[
+        "reliable"
+    ]:
+
+        print(
+            "✅ RELIABILITY: "
+            "RELIABLE",
+            flush=True,
+        )
 
     return result
 
 
 # ============================================================
-# EXPORTS
+# ALIAS
 # ============================================================
 
-__all__ = [
-    "WINDOW_MINUTES",
-    "TIMEFRAMES",
-    "MIN_5M_CANDLES",
-    "MIN_PRICE_RATIO",
-    "MAX_PRICE_RATIO",
-    "get_live_candles",
-    "get_live_candle_diagnostic",
-]
+def get_live_candles():
+    """
+    سازگاری با بخش‌های قدیمی پروژه.
+    """
+
+    return get_live_analysis_candles()
