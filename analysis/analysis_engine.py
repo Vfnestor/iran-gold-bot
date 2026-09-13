@@ -10,7 +10,9 @@ from database import (
 from candle_engine import (
     get_recent_candles,
 )
-
+from analysis.live_analysis_adapter import (
+    get_live_analysis_candles,
+)
 
 # ============================================================
 # CONFIG
