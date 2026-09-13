@@ -7,33 +7,10 @@ from database import (
     save_analysis,
 )
 
-from candle_engine import (
-    get_recent_candles,
-)
 from analysis.live_analysis_adapter import (
     get_live_analysis_candles,
 )
 
-# ============================================================
-# LIVE CANDLE PROVIDER
-# ============================================================
-
-def fetch_live_candles(
-    timeframe="5m",
-):
-    """
-    دریافت کندل‌های زنده از یک ساعت اخیر.
-
-    داده‌ها فقط در حافظه هستند و از جدول
-    gold_candles خوانده نمی‌شوند.
-    """
-
-    live_candles = get_live_analysis_candles()
-
-    return live_candles.get(
-        timeframe,
-        [],
-    )
 
 # ============================================================
 # CONFIG
@@ -55,7 +32,14 @@ MOMENTUM_PERIOD = 10
 
 SUPPORT_RESISTANCE_LOOKBACK = 20
 
+# ============================================================
+# بسیار مهم:
+# حداقل 25 کندل 5 دقیقه‌ای حفظ می‌شود.
+# ============================================================
+
 MIN_CANDLES_FOR_ANALYSIS = 25
+
+# برای EMA200 واقعاً به 200 کندل نیاز داریم.
 MIN_CANDLES_FOR_LONG_EMA = 200
 
 TIMEFRAMES = (
@@ -64,7 +48,11 @@ TIMEFRAMES = (
     ("1h", 100),
 )
 
-# Main scoring weights
+
+# ============================================================
+# SCORING WEIGHTS
+# ============================================================
+
 WEIGHT_TREND = 20
 WEIGHT_MOMENTUM = 12
 WEIGHT_RSI = 10
@@ -73,6 +61,27 @@ WEIGHT_EMA_POSITION = 10
 WEIGHT_FAIR_VALUE = 10
 WEIGHT_STRUCTURE = 10
 WEIGHT_MULTI_TIMEFRAME = 16
+
+
+# ============================================================
+# PRICE VALIDATION
+# ============================================================
+
+MIN_VALID_GOLD_PRICE = 50_000_000
+MAX_VALID_GOLD_PRICE = 1_000_000_000
+
+
+def is_valid_gold_price(value):
+    price = safe_float(value)
+
+    if price is None:
+        return False
+
+    return (
+        MIN_VALID_GOLD_PRICE
+        <= price
+        <= MAX_VALID_GOLD_PRICE
+    )
 
 
 # ============================================================
@@ -101,7 +110,10 @@ def clamp(value, minimum, maximum):
     if value is None:
         return minimum
 
-    return min(max(value, minimum), maximum)
+    return min(
+        max(value, minimum),
+        maximum,
+    )
 
 
 def average(values):
@@ -184,8 +196,13 @@ def candle_close(candle):
     if not candle:
         return None
 
-    for key in ("close", "close_price"):
-        value = safe_float(candle.get(key))
+    for key in (
+        "close",
+        "close_price",
+    ):
+        value = safe_float(
+            candle.get(key)
+        )
 
         if value is not None:
             return value
@@ -197,8 +214,13 @@ def candle_open(candle):
     if not candle:
         return None
 
-    for key in ("open", "open_price"):
-        value = safe_float(candle.get(key))
+    for key in (
+        "open",
+        "open_price",
+    ):
+        value = safe_float(
+            candle.get(key)
+        )
 
         if value is not None:
             return value
@@ -210,8 +232,13 @@ def candle_high(candle):
     if not candle:
         return None
 
-    for key in ("high", "high_price"):
-        value = safe_float(candle.get(key))
+    for key in (
+        "high",
+        "high_price",
+    ):
+        value = safe_float(
+            candle.get(key)
+        )
 
         if value is not None:
             return value
@@ -223,8 +250,13 @@ def candle_low(candle):
     if not candle:
         return None
 
-    for key in ("low", "low_price"):
-        value = safe_float(candle.get(key))
+    for key in (
+        "low",
+        "low_price",
+    ):
+        value = safe_float(
+            candle.get(key)
+        )
 
         if value is not None:
             return value
@@ -245,10 +277,26 @@ def normalize_candles(candles):
     result = []
 
     for candle in candles or []:
-        normalized = candle_to_dict(candle)
 
-        if normalized:
-            result.append(normalized)
+        normalized = candle_to_dict(
+            candle
+        )
+
+        if not normalized:
+            continue
+
+        close = candle_close(
+            normalized
+        )
+
+        if not is_valid_gold_price(
+            close
+        ):
+            continue
+
+        result.append(
+            normalized
+        )
 
     return result
 
@@ -261,10 +309,17 @@ def get_closes(candles):
     closes = []
 
     for candle in candles:
-        close = candle_close(candle)
 
-        if close is not None:
-            closes.append(close)
+        close = candle_close(
+            candle
+        )
+
+        if is_valid_gold_price(
+            close
+        ):
+            closes.append(
+                close
+            )
 
     return closes
 
@@ -277,19 +332,27 @@ def calculate_ema(values, period):
     cleaned = []
 
     for value in values:
-        number = safe_float(value)
+
+        number = safe_float(
+            value
+        )
 
         if number is not None:
-            cleaned.append(number)
+            cleaned.append(
+                number
+            )
 
     if len(cleaned) < period:
         return None
 
-    sma = sum(
-        cleaned[:period]
-    ) / period
+    sma = (
+        sum(cleaned[:period])
+        / period
+    )
 
-    multiplier = 2 / (period + 1)
+    multiplier = (
+        2 / (period + 1)
+    )
 
     ema = sma
 
@@ -306,14 +369,22 @@ def calculate_ema(values, period):
 # RSI
 # ============================================================
 
-def calculate_rsi(values, period=14):
+def calculate_rsi(
+    values,
+    period=14,
+):
     cleaned = []
 
     for value in values:
-        number = safe_float(value)
+
+        number = safe_float(
+            value
+        )
 
         if number is not None:
-            cleaned.append(number)
+            cleaned.append(
+                number
+            )
 
     if len(cleaned) <= period:
         return None
@@ -321,7 +392,10 @@ def calculate_rsi(values, period=14):
     gains = []
     losses = []
 
-    for index in range(1, len(cleaned)):
+    for index in range(
+        1,
+        len(cleaned),
+    ):
         change = (
             cleaned[index]
             - cleaned[index - 1]
@@ -330,9 +404,12 @@ def calculate_rsi(values, period=14):
         if change > 0:
             gains.append(change)
             losses.append(0)
+
         else:
             gains.append(0)
-            losses.append(abs(change))
+            losses.append(
+                abs(change)
+            )
 
     avg_gain = (
         sum(gains[:period])
@@ -367,7 +444,10 @@ def calculate_rsi(values, period=14):
     if avg_loss == 0:
         return 100.0
 
-    rs = avg_gain / avg_loss
+    rs = (
+        avg_gain
+        / avg_loss
+    )
 
     return 100 - (
         100 / (1 + rs)
@@ -394,7 +474,9 @@ def calculate_macd(values):
         )
 
         if value is not None:
-            ema_fast_values.append(value)
+            ema_fast_values.append(
+                value
+            )
 
     ema_slow_values = []
 
@@ -408,7 +490,9 @@ def calculate_macd(values):
         )
 
         if value is not None:
-            ema_slow_values.append(value)
+            ema_slow_values.append(
+                value
+            )
 
     if (
         not ema_fast_values
@@ -422,13 +506,19 @@ def calculate_macd(values):
     )
 
     if difference > 0:
+
         ema_fast_values = (
-            ema_fast_values[difference:]
+            ema_fast_values[
+                difference:
+            ]
         )
 
     elif difference < 0:
+
         ema_slow_values = (
-            ema_slow_values[-difference:]
+            ema_slow_values[
+                -difference:
+            ]
         )
 
     macd_values = []
@@ -454,7 +544,9 @@ def calculate_macd(values):
     if signal is None:
         return None
 
-    histogram = macd - signal
+    histogram = (
+        macd - signal
+    )
 
     return {
         "macd": macd,
@@ -467,7 +559,10 @@ def calculate_macd(values):
 # ATR
 # ============================================================
 
-def calculate_atr(candles, period=14):
+def calculate_atr(
+    candles,
+    period=14,
+):
     if len(candles) < period:
         return None
 
@@ -476,9 +571,18 @@ def calculate_atr(candles, period=14):
     previous_close = None
 
     for candle in candles:
-        high = candle_high(candle)
-        low = candle_low(candle)
-        close = candle_close(candle)
+
+        high = candle_high(
+            candle
+        )
+
+        low = candle_low(
+            candle
+        )
+
+        close = candle_close(
+            candle
+        )
 
         if (
             high is None
@@ -486,10 +590,19 @@ def calculate_atr(candles, period=14):
         ):
             continue
 
+        if (
+            high < low
+        ):
+            continue
+
         if previous_close is None:
-            true_range = high - low
+
+            true_range = (
+                high - low
+            )
 
         else:
+
             true_range = max(
                 high - low,
                 abs(
@@ -502,7 +615,12 @@ def calculate_atr(candles, period=14):
                 ),
             )
 
-        if true_range >= 0:
+        if (
+            math.isfinite(
+                true_range
+            )
+            and true_range >= 0
+        ):
             true_ranges.append(
                 true_range
             )
@@ -545,7 +663,9 @@ def calculate_momentum(
         return None
 
     return (
-        (current - previous)
+        (
+            current - previous
+        )
         / previous
     ) * 100
 
@@ -577,7 +697,9 @@ def calculate_price_change(
         return None
 
     return (
-        (current - previous)
+        (
+            current - previous
+        )
         / previous
     ) * 100
 
@@ -593,22 +715,27 @@ def calculate_support_resistance(
     if len(candles) < 3:
         return None, None
 
-    # Exclude latest candle.
-    # This prevents the current candle from
-    # automatically becoming the resistance/support.
     recent = candles[
         -(lookback + 1):-1
     ]
 
     if not recent:
-        recent = candles[-lookback:]
+        recent = candles[
+            -lookback:
+        ]
 
     highs = []
     lows = []
 
     for candle in recent:
-        high = candle_high(candle)
-        low = candle_low(candle)
+
+        high = candle_high(
+            candle
+        )
+
+        low = candle_low(
+            candle
+        )
 
         if high is not None:
             highs.append(high)
@@ -651,7 +778,8 @@ def calculate_structure_state(
     )
 
     latest_low = candle_low(
-        latest )
+        latest
+    )
 
     if (
         resistance is not None
@@ -729,7 +857,9 @@ def calculate_fair_value_deviation(
         return None
 
     return (
-        (price - fair_value)
+        (
+            price - fair_value
+        )
         / fair_value
     ) * 100
 
@@ -758,7 +888,10 @@ def calculate_source_spread(
         return None
 
     return (
-        (market_price - servix_price)
+        (
+            market_price
+            - servix_price
+        )
         / market_price
     ) * 100
 
@@ -788,27 +921,29 @@ def calculate_ema_position(
 
     if price > ema_fast:
         score += 1
+
     elif price < ema_fast:
         score -= 1
 
     if price > ema_slow:
         score += 1
+
     elif price < ema_slow:
         score -= 1
 
-    if (
-        ema_trend is not None
-    ):
+    if ema_trend is not None:
+
         if price > ema_trend:
             score += 1
+
         elif price < ema_trend:
             score -= 1
 
-    if (
-        ema_major is not None
-    ):
+    if ema_major is not None:
+
         if price > ema_major:
             score += 1
+
         elif price < ema_major:
             score -= 1
 
@@ -861,6 +996,7 @@ def calculate_trend_strength(
         )
 
     if momentum is not None:
+
         components.append(
             min(
                 abs(momentum) * 10,
@@ -869,6 +1005,7 @@ def calculate_trend_strength(
         )
 
     if rsi is not None:
+
         rsi_strength = (
             abs(rsi - 50)
             * 2
@@ -937,18 +1074,24 @@ def calculate_market_regime(
     if structure_state == "BREAKOUT_DOWN":
         return "BREAKOUT_DOWN"
 
-    if trend == "صعودی" and (
-        strong_trend
-        or strong_momentum
+    if (
+        trend == "صعودی"
+        and (
+            strong_trend
+            or strong_momentum
+        )
     ):
         if high_volatility:
             return "BULLISH_VOLATILE"
 
         return "BULLISH_TREND"
 
-    if trend == "نزولی" and (
-        strong_trend
-        or strong_momentum
+    if (
+        trend == "نزولی"
+        and (
+            strong_trend
+            or strong_momentum
+        )
     ):
         if high_volatility:
             return "BEARISH_VOLATILE"
@@ -968,7 +1111,7 @@ def calculate_market_regime(
 
 
 # ============================================================
-# MULTI TIMEFRAME ANALYSIS
+# MULTI TIMEFRAME
 # ============================================================
 
 def analyze_timeframe(
@@ -983,7 +1126,8 @@ def analyze_timeframe(
         candles
     )
 
-    if len(closes) < 25:
+    if len(closes) < MIN_CANDLES_FOR_ANALYSIS:
+
         return {
             "timeframe": timeframe,
             "available": False,
@@ -1046,19 +1190,54 @@ def analyze_timeframe(
 
 
 def analyze_multi_timeframe():
+    """
+    بسیار مهم:
+
+    MTF فقط از LIVE candles استفاده می‌کند.
+
+    دیگر از:
+        get_recent_candles()
+        gold_candles
+
+    استفاده نمی‌شود.
+
+    بنابراین داده‌های قدیمی خراب TGJU وارد MTF
+    نخواهند شد.
+    """
+
     result = {}
 
     for timeframe, limit in TIMEFRAMES:
-        candles = fetch_candles(
-            timeframe,
-            limit,
+
+        live_data = (
+            get_live_analysis_candles()
         )
+
+        candles = live_data.get(
+            timeframe,
+            [],
+        )
+
+        candles = normalize_candles(
+            candles
+        )
+
+        # فقط تعداد مورد نیاز را نگه می‌داریم.
+        if len(candles) > limit:
+            candles = candles[-limit:]
 
         result[timeframe] = (
             analyze_timeframe(
                 candles,
                 timeframe,
             )
+        )
+
+        print(
+            "📊 MTF:",
+            timeframe,
+            f"{len(candles)} candles",
+            flush=True,
         )
 
     return result
@@ -1101,10 +1280,13 @@ def calculate_mtf_alignment(
             bearish += 1
 
     if available == 0:
+
         return {
             "bias": "UNKNOWN",
             "alignment": 0,
             "available": 0,
+            "bullish": 0,
+            "bearish": 0,
         }
 
     if bullish > bearish:
@@ -1175,6 +1357,7 @@ def indicator_direction(
             directions["rsi"] = 1
 
     if macd:
+
         histogram = safe_float(
             macd.get("histogram")
         )
@@ -1196,6 +1379,7 @@ def indicator_direction(
             directions["momentum"] = -1
 
     if ema_position:
+
         score = safe_float(
             ema_position.get(
                 "score"
@@ -1218,9 +1402,11 @@ def indicator_direction(
             directions["fair_value"] = -1
 
     if structure_state == "BREAKOUT_UP":
+
         directions["structure"] = 1
 
     elif structure_state == "BREAKOUT_DOWN":
+
         directions["structure"] = -1
 
     elif (
@@ -1228,6 +1414,7 @@ def indicator_direction(
         and price is not None
         and price > resistance
     ):
+
         directions["structure"] = 1
 
     elif (
@@ -1235,6 +1422,7 @@ def indicator_direction(
         and price is not None
         and price < support
     ):
+
         directions["structure"] = -1
 
     return directions
@@ -1274,8 +1462,12 @@ def calculate_market_score(
     bullish = 0.0
     bearish = 0.0
 
-    # Trend
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
+
     if trend == "صعودی":
+
         strength_factor = max(
             (
                 trend_strength
@@ -1290,6 +1482,7 @@ def calculate_market_score(
         )
 
     elif trend == "نزولی":
+
         strength_factor = max(
             (
                 trend_strength
@@ -1303,49 +1496,70 @@ def calculate_market_score(
             * strength_factor
         )
 
-    # Momentum
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
+
     if directions["momentum"] > 0:
         bullish += WEIGHT_MOMENTUM
 
     elif directions["momentum"] < 0:
         bearish += WEIGHT_MOMENTUM
 
+    # --------------------------------------------------------
     # RSI
+    # --------------------------------------------------------
+
     if directions["rsi"] > 0:
         bullish += WEIGHT_RSI
 
     elif directions["rsi"] < 0:
         bearish += WEIGHT_RSI
 
+    # --------------------------------------------------------
     # MACD
+    # --------------------------------------------------------
+
     if directions["macd"] > 0:
         bullish += WEIGHT_MACD
 
     elif directions["macd"] < 0:
         bearish += WEIGHT_MACD
 
+    # --------------------------------------------------------
     # EMA
+    # --------------------------------------------------------
+
     if directions["ema"] > 0:
         bullish += WEIGHT_EMA_POSITION
 
     elif directions["ema"] < 0:
         bearish += WEIGHT_EMA_POSITION
 
-    # Fair value
+    # --------------------------------------------------------
+    # FAIR VALUE
+    # --------------------------------------------------------
+
     if directions["fair_value"] > 0:
         bullish += WEIGHT_FAIR_VALUE
 
     elif directions["fair_value"] < 0:
         bearish += WEIGHT_FAIR_VALUE
 
-    # Structure
+    # --------------------------------------------------------
+    # STRUCTURE
+    # --------------------------------------------------------
+
     if directions["structure"] > 0:
         bullish += WEIGHT_STRUCTURE
 
     elif directions["structure"] < 0:
         bearish += WEIGHT_STRUCTURE
 
-    # Multi timeframe
+    # --------------------------------------------------------
+    # MULTI TIMEFRAME
+    # --------------------------------------------------------
+
     if mtf_alignment is not None:
 
         mtf_strength = (
@@ -1353,12 +1567,14 @@ def calculate_market_score(
         )
 
         if mtf_bias == "BULLISH":
+
             bullish += (
                 WEIGHT_MULTI_TIMEFRAME
                 * mtf_strength
             )
 
         elif mtf_bias == "BEARISH":
+
             bearish += (
                 WEIGHT_MULTI_TIMEFRAME
                 * mtf_strength
@@ -1370,6 +1586,7 @@ def calculate_market_score(
     )
 
     if total <= 0:
+
         return {
             "score": 50.0,
             "bullish": 0.0,
@@ -1440,6 +1657,7 @@ def calculate_trend(
         ema_fast is not None
         and ema_slow is not None
     ):
+
         if ema_fast > ema_slow:
             score += 2
 
@@ -1492,6 +1710,7 @@ def calculate_signal(
     score = 0.0
 
     if market_score is not None:
+
         score += (
             (
                 market_score
@@ -1521,6 +1740,7 @@ def calculate_signal(
             score += 1
 
     if macd:
+
         histogram = safe_float(
             macd.get("histogram")
         )
@@ -1555,9 +1775,19 @@ def calculate_signal(
         elif mtf_bias == "BEARISH":
             score -= 2
 
-    # Prevent aggressive trend signals in a clear range.
+    # --------------------------------------------------------
+    # RANGE PROTECTION
+    # --------------------------------------------------------
+
     if market_regime == "RANGE":
         score *= 0.65
+
+    # --------------------------------------------------------
+    # اگر MTF اصلاً موجود نیست، سیگنال را تقویت نکن.
+    # --------------------------------------------------------
+
+    if mtf_bias == "UNKNOWN":
+        score *= 0.90
 
     if score >= 4.5:
         return "BUY"
@@ -1598,11 +1828,13 @@ def generate_signal_reasons(
     warnings = []
 
     if trend == "صعودی":
+
         bullish_reasons.append(
             "روند کوتاه‌مدت صعودی است"
         )
 
     elif trend == "نزولی":
+
         bearish_reasons.append(
             "روند کوتاه‌مدت نزولی است"
         )
@@ -1611,12 +1843,15 @@ def generate_signal_reasons(
         ema_fast is not None
         and ema_slow is not None
     ):
+
         if ema_fast > ema_slow:
+
             bullish_reasons.append(
                 "EMA 9 بالاتر از EMA 21 است"
             )
 
         elif ema_fast < ema_slow:
+
             bearish_reasons.append(
                 "EMA 9 پایین‌تر از EMA 21 است"
             )
@@ -1625,12 +1860,15 @@ def generate_signal_reasons(
         ema_trend is not None
         and price is not None
     ):
+
         if price > ema_trend:
+
             bullish_reasons.append(
                 "قیمت بالاتر از EMA 50 قرار دارد"
             )
 
         elif price < ema_trend:
+
             bearish_reasons.append(
                 "قیمت پایین‌تر از EMA 50 قرار دارد"
             )
@@ -1639,12 +1877,15 @@ def generate_signal_reasons(
         ema_major is not None
         and price is not None
     ):
+
         if price > ema_major:
+
             bullish_reasons.append(
                 "قیمت بالاتر از EMA 200 است"
             )
 
         elif price < ema_major:
+
             bearish_reasons.append(
                 "قیمت پایین‌تر از EMA 200 است"
             )
@@ -1652,11 +1893,13 @@ def generate_signal_reasons(
     if momentum is not None:
 
         if momentum > 0:
+
             bullish_reasons.append(
                 "Momentum مثبت است"
             )
 
         elif momentum < 0:
+
             bearish_reasons.append(
                 "Momentum منفی است"
             )
@@ -1664,26 +1907,31 @@ def generate_signal_reasons(
     if rsi is not None:
 
         if 55 <= rsi <= 70:
+
             bullish_reasons.append(
                 "RSI از قدرت خریداران حمایت می‌کند"
             )
 
         elif 30 <= rsi <= 45:
+
             bearish_reasons.append(
                 "RSI از قدرت فروشندگان حمایت می‌کند"
             )
 
         elif rsi > 75:
+
             warnings.append(
                 "RSI در محدوده اشباع خرید است"
             )
 
         elif rsi < 25:
+
             warnings.append(
                 "RSI در محدوده اشباع فروش است"
             )
 
     if macd:
+
         histogram = safe_float(
             macd.get("histogram")
         )
@@ -1691,11 +1939,13 @@ def generate_signal_reasons(
         if histogram is not None:
 
             if histogram > 0:
+
                 bullish_reasons.append(
                     "MACD مومنتوم مثبت دارد"
                 )
 
             elif histogram < 0:
+
                 bearish_reasons.append(
                     "MACD مومنتوم منفی دارد"
                 )
@@ -1703,49 +1953,57 @@ def generate_signal_reasons(
     if fair_value_deviation is not None:
 
         if fair_value_deviation < -2:
+
             bullish_reasons.append(
                 "قیمت پایین‌تر از ارزش منصفانه است"
             )
 
         elif fair_value_deviation > 2:
+
             bearish_reasons.append(
                 "قیمت بالاتر از ارزش منصفانه است"
             )
 
     if structure_state == "BREAKOUT_UP":
+
         bullish_reasons.append(
             "شکست صعودی مقاومت اخیر مشاهده شده است"
         )
 
     elif structure_state == "BREAKOUT_DOWN":
+
         bearish_reasons.append(
             "شکست نزولی حمایت اخیر مشاهده شده است"
         )
 
-    if (
-        mtf_alignment >= 66
-    ):
+    if mtf_alignment >= 66:
+
         if mtf_bias == "BULLISH":
+
             bullish_reasons.append(
                 "تأیید چندتایم‌فریمی صعودی است"
             )
 
         elif mtf_bias == "BEARISH":
+
             bearish_reasons.append(
                 "تأیید چندتایم‌فریمی نزولی است"
             )
 
     elif mtf_alignment < 50:
+
         warnings.append(
-            "تایم‌فریم‌ها هم‌جهت نیستند"
+            "تایم‌فریم‌ها هم‌جهت نیستند یا داده کافی نیست"
         )
 
     if market_regime == "RANGE":
+
         warnings.append(
             "بازار در حالت رنج قرار دارد"
         )
 
     elif market_regime == "HIGH_VOLATILITY":
+
         warnings.append(
             "نوسان بازار بالاست"
         )
@@ -1753,22 +2011,27 @@ def generate_signal_reasons(
     if market_score is not None:
 
         if market_score >= 65:
+
             bullish_reasons.append(
                 "امتیاز کلی بازار به نفع خریداران است"
             )
 
         elif market_score <= 35:
+
             bearish_reasons.append(
                 "امتیاز کلی بازار به نفع فروشندگان است"
             )
 
     if signal == "BUY":
+
         primary = bullish_reasons
 
     elif signal == "SELL":
+
         primary = bearish_reasons
 
     else:
+
         primary = (
             bullish_reasons[:2]
             + bearish_reasons[:2]
@@ -1801,8 +2064,8 @@ def calculate_confidence(
 ):
     confidence = 45.0
 
-    # Market score agreement
     if market_score is not None:
+
         confidence += (
             abs(
                 market_score - 50
@@ -1810,68 +2073,71 @@ def calculate_confidence(
             * 0.30
         )
 
-    # Trend
     if trend != "خنثی":
         confidence += 5
 
-    # Trend strength
     if trend_strength is not None:
+
         confidence += (
             trend_strength
             * 0.08
         )
 
-    # Signal existence
     if signal in (
         "BUY",
         "SELL",
     ):
+
         confidence += 4
 
-    # RSI quality
     if rsi is not None:
+
         if 40 <= rsi <= 70:
+
             confidence += 2
 
-        elif rsi > 80 or rsi < 20:
+        elif (
+            rsi > 80
+            or rsi < 20
+        ):
+
             confidence -= 3
 
-    # MACD availability
     if macd:
         confidence += 2
 
-    # Fair value availability
     if fair_value_deviation is not None:
         confidence += 2
 
-    # Data quantity
     if candle_count >= 100:
+
         confidence += 3
 
     elif candle_count >= 60:
+
         confidence += 2
 
-    # MTF
     if mtf_available >= 3:
+
         confidence += (
             mtf_alignment
             * 0.08
         )
 
     elif mtf_available >= 2:
+
         confidence += (
             mtf_alignment
             * 0.05
         )
 
     else:
+
         confidence -= 4
 
-    # Range penalty
     if market_regime == "RANGE":
         confidence -= 6
 
-    # High volatility penalty
     if market_regime == "HIGH_VOLATILITY":
         confidence -= 4
 
@@ -1896,7 +2162,9 @@ def calculate_trade_levels(
     support,
     resistance,
 ):
-    if price is None:
+    if not is_valid_gold_price(
+        price
+    ):
         return {
             "entry": None,
             "stop_loss": None,
@@ -1906,6 +2174,8 @@ def calculate_trade_levels(
             "risk_reward": None,
         }
 
+    price = float(price)
+
     volatility = safe_float(
         atr
     )
@@ -1914,76 +2184,141 @@ def calculate_trade_levels(
         volatility is None
         or volatility <= 0
     ):
+
         volatility = (
             price * 0.005
         )
+
+    # --------------------------------------------------------
+    # حداقل فاصله SL
+    # --------------------------------------------------------
+
+    minimum_risk = (
+        price * 0.002
+    )
+
+    # ========================================================
+    # BUY
+    # ========================================================
 
     if signal == "BUY":
 
         entry = price
 
+        candidate_stop = None
+
         if (
             support is not None
             and support < price
         ):
-            stop_loss = support
+            candidate_stop = support
+
+        atr_stop = (
+            price
+            - volatility * 1.5
+        )
+
+        if candidate_stop is not None:
+
+            stop_loss = max(
+                candidate_stop,
+                atr_stop,
+            )
 
         else:
-            stop_loss = (
-                price
-                - volatility * 1.5
-            )
+
+            stop_loss = atr_stop
 
         risk = (
             entry
             - stop_loss
         )
 
-        if risk <= 0:
-            risk = volatility
+        if risk < minimum_risk:
 
-        tp1 = entry + risk
-        tp2 = entry + (
-            risk * 2
+            risk = max(
+                volatility,
+                minimum_risk,
+            )
+
+            stop_loss = (
+                entry - risk
+            )
+
+        tp1 = (
+            entry + risk
         )
-        tp3 = entry + (
-            risk * 3
+
+        tp2 = (
+            entry + risk * 2
+        )
+
+        tp3 = (
+            entry + risk * 3
         )
 
         reward = (
             tp2 - entry
         )
 
+    # ========================================================
+    # SELL
+    # ========================================================
+
     elif signal == "SELL":
 
         entry = price
+
+        candidate_stop = None
 
         if (
             resistance is not None
             and resistance > price
         ):
-            stop_loss = resistance
+            candidate_stop = resistance
+
+        atr_stop = (
+            price
+            + volatility * 1.5
+        )
+
+        if candidate_stop is not None:
+
+            stop_loss = min(
+                candidate_stop,
+                atr_stop,
+            )
 
         else:
-            stop_loss = (
-                price
-                + volatility * 1.5
-            )
+
+            stop_loss = atr_stop
 
         risk = (
             stop_loss
             - entry
         )
 
-        if risk <= 0:
-            risk = volatility
+        if risk < minimum_risk:
 
-        tp1 = entry - risk
-        tp2 = entry - (
-            risk * 2
+            risk = max(
+                volatility,
+                minimum_risk,
+            )
+
+            stop_loss = (
+                entry + risk
+            )
+
+        tp1 = (
+            entry - risk
         )
-        tp3 = entry - (
-            risk * 3
+
+        tp2 = (
+            entry - risk * 2
+        )
+
+        tp3 = (
+            entry - risk * 3
         )
 
         reward = (
@@ -1991,6 +2326,7 @@ def calculate_trade_levels(
         )
 
     else:
+
         return {
             "entry": price,
             "stop_loss": None,
@@ -2003,6 +2339,7 @@ def calculate_trade_levels(
     risk_reward = None
 
     if risk > 0:
+
         risk_reward = (
             reward / risk
         )
@@ -2049,24 +2386,29 @@ def get_normalized_market_history(
     limit=100,
 ):
     try:
+
         rows = get_market_history(
             limit
         )
 
     except TypeError:
+
         rows = get_market_history()
 
     except Exception as error:
+
         print(
             "❌ ANALYSIS: market history "
             f"error: {error}",
             flush=True,
         )
+
         return []
 
     result = []
 
     for row in rows or []:
+
         normalized = row_to_dict(
             row,
             MARKET_HISTORY_COLUMNS,
@@ -2102,10 +2444,63 @@ def get_latest_market_data():
             )
         )
 
-        if price is not None:
+        if is_valid_gold_price(
+            price
+        ):
             return row
 
     return history[-1]
+
+
+# ============================================================
+# LIVE CANDLE FETCH
+# ============================================================
+
+def fetch_live_candles(
+    timeframe="5m",
+    limit=200,
+):
+    """
+    تنها منبع کندل برای تحلیل.
+
+    هیچ داده‌ای از gold_candles خوانده نمی‌شود.
+    """
+
+    try:
+
+        live_data = (
+            get_live_analysis_candles()
+        )
+
+    except Exception as error:
+
+        print(
+            "⚠️ ANALYSIS: live candle "
+            f"provider error: {error}",
+            flush=True,
+        )
+
+        return []
+
+    if not isinstance(
+        live_data,
+        dict,
+    ):
+        return []
+
+    candles = live_data.get(
+        timeframe,
+        [],
+    )
+
+    candles = normalize_candles(
+        candles
+    )
+
+    if len(candles) > limit:
+        candles = candles[-limit:]
+
+    return candles
 
 
 # ============================================================
@@ -2116,38 +2511,15 @@ def fetch_candles(
     timeframe="5m",
     limit=200,
 ):
-    try:
-        candles = get_recent_candles(
-            timeframe,
-            limit,
-        )
+    """
+    سازگاری با بخش‌های قدیمی کد.
 
-    except TypeError:
+    عمداً فقط LIVE CANDLES را صدا می‌زند.
+    """
 
-        try:
-            candles = get_recent_candles(
-                timeframe=timeframe,
-                limit=limit,
-            )
-
-        except Exception as error:
-            print(
-                "⚠️ ANALYSIS: candle fetch "
-                f"error ({timeframe}): {error}",
-                flush=True,
-            )
-            return []
-
-    except Exception as error:
-        print(
-            "⚠️ ANALYSIS: candle fetch "
-            f"error ({timeframe}): {error}",
-            flush=True,
-        )
-        return []
-
-    return normalize_candles(
-        candles
+    return fetch_live_candles(
+        timeframe,
+        limit,
     )
 
 
@@ -2157,57 +2529,72 @@ def fetch_candles(
 
 def run_analysis():
     try:
+
         print(
             "🧠 Professional Analysis: starting...",
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # 5M DATA
-        # ----------------------------------------------------
+        # ====================================================
+        # 5M
+        # ====================================================
 
         candles_5m = fetch_live_candles(
             "5m",
+            200,
         )
+
         print(
             "📡 LIVE 5M CANDLES:",
             len(candles_5m),
             flush=True,
-    )
+        )
 
-        if len(candles_5m) < MIN_CANDLES_FOR_ANALYSIS:
+        if (
+            len(candles_5m)
+            < MIN_CANDLES_FOR_ANALYSIS
+        ):
+
             print(
                 "ℹ️ ANALYSIS: not enough 5m "
                 f"candles ({len(candles_5m)}/"
                 f"{MIN_CANDLES_FOR_ANALYSIS})",
                 flush=True,
             )
+
             return None
 
         closes = get_closes(
             candles_5m
         )
 
-        if len(closes) < MIN_CANDLES_FOR_ANALYSIS:
+        if (
+            len(closes)
+            < MIN_CANDLES_FOR_ANALYSIS
+        ):
+
             print(
                 "ℹ️ ANALYSIS: not enough valid closes.",
                 flush=True,
             )
+
             return None
 
-        # ----------------------------------------------------
+        # ====================================================
         # MARKET DATA
-        # ----------------------------------------------------
+        # ====================================================
 
         latest_market = (
             get_latest_market_data()
         )
 
         if latest_market is None:
+
             print(
                 "ℹ️ ANALYSIS: no market snapshot available.",
                 flush=True,
             )
+
             return None
 
         price = safe_float(
@@ -2216,8 +2603,22 @@ def run_analysis():
             )
         )
 
-        if price is None:
+        if not is_valid_gold_price(
+            price
+        ):
+
             price = closes[-1]
+
+        if not is_valid_gold_price(
+            price
+        ):
+
+            print(
+                "❌ ANALYSIS: invalid gold price.",
+                flush=True,
+            )
+
+            return None
 
         world_gold_usd = safe_float(
             latest_market.get(
@@ -2237,9 +2638,9 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # INDICATORS
-        # ----------------------------------------------------
+        # ====================================================
 
         ema_fast = calculate_ema(
             closes,
@@ -2366,9 +2767,9 @@ def run_analysis():
             rsi,
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # MARKET REGIME
-        # ----------------------------------------------------
+        # ====================================================
 
         market_regime = (
             calculate_market_regime(
@@ -2382,9 +2783,9 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # MULTI TIMEFRAME
-        # ----------------------------------------------------
+        # ====================================================
 
         mtf_data = (
             analyze_multi_timeframe()
@@ -2417,9 +2818,9 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # MARKET SCORE
-        # ----------------------------------------------------
+        # ====================================================
 
         market_score_data = (
             calculate_market_score(
@@ -2446,9 +2847,9 @@ def run_analysis():
             50.0,
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # SIGNAL
-        # ----------------------------------------------------
+        # ====================================================
 
         signal = calculate_signal(
             market_score,
@@ -2465,9 +2866,9 @@ def run_analysis():
             market_regime,
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # REASONS
-        # ----------------------------------------------------
+        # ====================================================
 
         reasons = (
             generate_signal_reasons(
@@ -2493,9 +2894,9 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # CONFIDENCE
-        # ----------------------------------------------------
+        # ====================================================
 
         confidence = (
             calculate_confidence(
@@ -2513,9 +2914,9 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # TRADE LEVELS
-        # ----------------------------------------------------
+        # ====================================================
 
         trade_levels = (
             calculate_trade_levels(
@@ -2527,198 +2928,267 @@ def run_analysis():
             )
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # ANALYSIS DATA
-        # ----------------------------------------------------
+        # ====================================================
 
         analysis_data = {
+
             "symbol": SYMBOL,
+
             "primary_timeframe": "5m",
+
             "candle_count": len(
                 candles_5m
             ),
 
-            "market_score": market_score_data,
+            "market_score":
+                market_score_data,
 
             "trend": trend,
-            "trend_strength": trend_strength,
-            "market_regime": market_regime,
-            "structure_state": structure_state,
+
+            "trend_strength":
+                trend_strength,
+
+            "market_regime":
+                market_regime,
+
+            "structure_state":
+                structure_state,
 
             "multi_timeframe": {
+
                 "bias": mtf_bias,
-                "alignment": mtf_alignment,
-                "available": mtf_available,
-                "timeframes": mtf_data,
+
+                "alignment":
+                    mtf_alignment,
+
+                "available":
+                    mtf_available,
+
+                "timeframes":
+                    mtf_data,
             },
 
             "indicators": {
-                "ema_fast": ema_fast,
-                "ema_slow": ema_slow,
-                "ema_trend": ema_trend,
-                "ema_major": ema_major,
-                "rsi": rsi,
-                "macd": macd,
-                "atr": atr,
-                "momentum": momentum,
+
+                "ema_fast":
+                    ema_fast,
+
+                "ema_slow":
+                    ema_slow,
+
+                "ema_trend":
+                    ema_trend,
+
+                "ema_major":
+                    ema_major,
+
+                "rsi":
+                    rsi,
+
+                "macd":
+                    macd,
+
+                "atr":
+                    atr,
+
+                "momentum":
+                    momentum,
             },
 
             "price_changes": {
-                "5_candles": price_change_5,
-                "15_candles": price_change_15,
-                "30_candles": price_change_30,
+
+                "5_candles":
+                    price_change_5,
+
+                "15_candles":
+                    price_change_15,
+
+                "30_candles":
+                    price_change_30,
             },
 
             "structure": {
-                "support": support,
-                "resistance": resistance,
-                "state": structure_state,
+
+                "support":
+                    support,
+
+                "resistance":
+                    resistance,
+
+                "state":
+                    structure_state,
             },
 
             "fair_value": {
-                "value": fair_value,
-                "deviation_percent": (
-                    fair_value_deviation
-                ),
+
+                "value":
+                    fair_value,
+
+                "deviation_percent":
+                    fair_value_deviation,
             },
 
             "source": {
-                "servix_price": servix_price,
-                "source_spread_percent": (
-                    source_spread
-                ),
+
+                "servix_price":
+                    servix_price,
+
+                "source_spread_percent":
+                    source_spread,
             },
 
-            "signal": signal,
-            "confidence": confidence,
+            "signal":
+                signal,
 
-            "trade_levels": trade_levels,
+            "confidence":
+                confidence,
 
-            "reasons": reasons,
+            "trade_levels":
+                trade_levels,
+
+            "reasons":
+                reasons,
 
             "market_data": {
-                "gold_18k_toman": price,
-                "world_gold_usd": (
-                    world_gold_usd
-                ),
-                "usd_mid_toman": (
-                    usd_mid_toman
-                ),
+
+                "gold_18k_toman":
+                    price,
+
+                "world_gold_usd":
+                    world_gold_usd,
+
+                "usd_mid_toman":
+                    usd_mid_toman,
             },
         }
 
-        # ----------------------------------------------------
+        # ====================================================
         # SAVE
-        # ----------------------------------------------------
+        # ====================================================
 
         analysis = {
-            "timestamp": datetime.now(
-                timezone.utc
-            ).isoformat(),
 
-            "symbol": SYMBOL,
+            "timestamp":
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
 
-            "price_toman": price,
+            "symbol":
+                SYMBOL,
 
-            "signal": signal,
+            "price_toman":
+                price,
 
-            "trend": trend,
+            "signal":
+                signal,
 
-            "confidence": confidence,
+            "trend":
+                trend,
 
-            "entry": trade_levels.get(
-                "entry"
-            ),
+            "confidence":
+                confidence,
 
-            "stop_loss": trade_levels.get(
-                "stop_loss"
-            ),
+            "entry":
+                trade_levels.get(
+                    "entry"
+                ),
 
-            "take_profit_1": (
+            "stop_loss":
+                trade_levels.get(
+                    "stop_loss"
+                ),
+
+            "take_profit_1":
                 trade_levels.get(
                     "take_profit_1"
-                )
-            ),
+                ),
 
-            "take_profit_2": (
+            "take_profit_2":
                 trade_levels.get(
                     "take_profit_2"
-                )
-            ),
+                ),
 
-            "take_profit_3": (
+            "take_profit_3":
                 trade_levels.get(
                     "take_profit_3"
-                )
-            ),
+                ),
 
-            "risk_reward": (
+            "risk_reward":
                 trade_levels.get(
                     "risk_reward"
-                )
-            ),
+                ),
 
-            "rsi": rsi,
+            "rsi":
+                rsi,
 
-            "macd": (
-                macd.get("macd")
-                if macd
-                else None
-            ),
+            "macd":
+                (
+                    macd.get("macd")
+                    if macd
+                    else None
+                ),
 
-            "macd_signal": (
-                macd.get("signal")
-                if macd
-                else None
-            ),
+            "macd_signal":
+                (
+                    macd.get("signal")
+                    if macd
+                    else None
+                ),
 
-            "ema_fast": ema_fast,
+            "ema_fast":
+                ema_fast,
 
-            "ema_slow": ema_slow,
+            "ema_slow":
+                ema_slow,
 
-            "atr": atr,
+            "atr":
+                atr,
 
-            "momentum": momentum,
+            "momentum":
+                momentum,
 
-            "support": support,
+            "support":
+                support,
 
-            "resistance": resistance,
+            "resistance":
+                resistance,
 
-            "world_gold_usd": (
-                world_gold_usd
-            ),
+            "world_gold_usd":
+                world_gold_usd,
 
-            "usd_mid_toman": (
-                usd_mid_toman
-            ),
+            "usd_mid_toman":
+                usd_mid_toman,
 
-            "fair_value_toman": (
-                fair_value
-            ),
+            "fair_value_toman":
+                fair_value,
 
-            "source_spread": (
-                source_spread
-            ),
+            "source_spread":
+                source_spread,
 
-            "analysis_data": json.dumps(
-                analysis_data,
-                ensure_ascii=False,
-            ),
+            "analysis_data":
+                json.dumps(
+                    analysis_data,
+                    ensure_ascii=False,
+                ),
         }
 
         try:
+
             save_analysis(
                 analysis
             )
 
         except TypeError:
+
             save_analysis(
                 analysis=analysis
             )
 
-        # ----------------------------------------------------
+        # ====================================================
         # LOG
-        # ----------------------------------------------------
+        # ====================================================
 
         print(
             "🧠 Professional Analysis completed:",
@@ -2774,6 +3244,12 @@ def run_analysis():
         )
 
         print(
+            f"   MTF Available : "
+            f"{mtf_available}/3",
+            flush=True,
+        )
+
+        print(
             f"   Signal        : "
             f"{signal}",
             flush=True,
@@ -2788,8 +3264,10 @@ def run_analysis():
         return analysis
 
     except Exception as error:
+
         print(
-            f"❌ ANALYSIS ENGINE ERROR: {error}",
+            "❌ ANALYSIS ENGINE ERROR:",
+            f"{type(error).__name__}: {error}",
             flush=True,
         )
 
@@ -2927,17 +3405,22 @@ def format_analysis_summary(
         raw_data,
         str,
     ):
+
         try:
+
             analysis_data = json.loads(
                 raw_data
             )
+
         except Exception:
+
             analysis_data = {}
 
     elif isinstance(
         raw_data,
         dict,
     ):
+
         analysis_data = raw_data
 
     market_regime = (
@@ -2966,6 +3449,11 @@ def format_analysis_summary(
 
     mtf_alignment = mtf.get(
         "alignment"
+    )
+
+    mtf_available = mtf.get(
+        "available",
+        0,
     )
 
     reasons = analysis_data.get(
@@ -3026,6 +3514,8 @@ def format_analysis_summary(
         f"Bias: {mtf_bias}\n"
         f"Alignment: "
         f"{format_number(mtf_alignment)}%\n"
+        f"Available: "
+        f"{mtf_available}/3\n"
         "\n"
         "📊 اندیکاتورها\n"
         f"RSI: "
@@ -3065,23 +3555,27 @@ def format_analysis_summary(
     )
 
     if primary_reasons:
+
         text += (
             "\n"
             "🧠 دلایل اصلی\n"
         )
 
         for reason in primary_reasons[:5]:
+
             text += (
                 f"• {reason}\n"
             )
 
     if warnings:
+
         text += (
             "\n"
             "⚠️ هشدارها\n"
         )
 
         for warning in warnings[:4]:
+
             text += (
                 f"• {warning}\n"
             )
