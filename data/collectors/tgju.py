@@ -82,22 +82,45 @@ def extract_current_price(html):
 
 
 # ============================================================
+# TIMESTAMP HELPER
+# ============================================================
+
+def _timestamp_from_ms(
+    timestamp_ms,
+):
+    """
+    تبدیل Unix milliseconds به UTC datetime.
+    """
+
+    try:
+
+        return datetime.fromtimestamp(
+            int(timestamp_ms) / 1000,
+            tz=timezone.utc,
+        )
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
 # FIND TGJU PRICE SERIES
 # ============================================================
 
 def extract_price_series(html):
 
     """
-    TGJU chart data appears in the page as pairs:
+    استخراج سری‌های قیمت از chartDataهای TGJU.
 
-        [timestamp_ms, price]
+    نکته مهم:
 
-    Example:
+    TGJU ممکن است چند chartData مختلف داخل صفحه
+    داشته باشد.
 
-        [1789215616000, 240895000]
+    بنابراین بزرگ‌ترین سری الزاماً سری زنده نیست.
 
-    This function extracts candidate intraday series
-    from inline JavaScript.
+    سری مناسب بر اساس جدیدترین timestamp انتخاب می‌شود.
     """
 
     soup = BeautifulSoup(
@@ -106,6 +129,14 @@ def extract_price_series(html):
     )
 
     candidate_series = []
+
+    # --------------------------------------------------------
+    # Current UTC time
+    # --------------------------------------------------------
+
+    now = datetime.now(
+        timezone.utc
+    )
 
     # --------------------------------------------------------
     # Inspect inline JavaScript
@@ -127,7 +158,7 @@ def extract_price_series(html):
             continue
 
         # ----------------------------------------------------
-        # Only inspect scripts containing chart data
+        # Only inspect chart scripts
         # ----------------------------------------------------
 
         if "chartData" not in script_text:
@@ -149,7 +180,9 @@ def extract_price_series(html):
             )
         ]
 
-        for position in chart_positions:
+        for chart_index, position in enumerate(
+            chart_positions
+        ):
 
             section = script_text[
                 position:
@@ -183,6 +216,7 @@ def extract_price_series(html):
                     )
 
                 except ValueError:
+
                     continue
 
                 # --------------------------------------------
@@ -195,10 +229,26 @@ def extract_price_series(html):
                 if price <= 0:
                     continue
 
-                timestamp = datetime.fromtimestamp(
-                    timestamp_ms / 1000,
-                    tz=timezone.utc,
+                timestamp = _timestamp_from_ms(
+                    timestamp_ms
                 )
+
+                if timestamp is None:
+                    continue
+
+                # --------------------------------------------
+                # Ignore obviously future timestamps
+                # --------------------------------------------
+
+                if timestamp > (
+                    now + (
+                        __import__("datetime")
+                        .timedelta(
+                            minutes=5
+                        )
+                    )
+                ):
+                    continue
 
                 points.append(
                     {
@@ -208,44 +258,163 @@ def extract_price_series(html):
                     }
                 )
 
-            if len(points) >= 5:
+            if len(points) < 5:
+                continue
 
-                candidate_series.append(
-                    points
-                )
+            # ------------------------------------------------
+            # Remove duplicate timestamps inside candidate
+            # ------------------------------------------------
+
+            unique = {}
+
+            for point in points:
+
+                unique[
+                    point["timestamp_ms"]
+                ] = point
+
+            cleaned = list(
+                unique.values()
+            )
+
+            cleaned.sort(
+                key=lambda x: x[
+                    "timestamp_ms"
+                ]
+            )
+
+            if len(cleaned) < 5:
+                continue
+
+            # ------------------------------------------------
+            # Candidate metadata
+            # ------------------------------------------------
+
+            first_timestamp = cleaned[0][
+                "timestamp"
+            ]
+
+            last_timestamp = cleaned[-1][
+                "timestamp"
+            ]
+
+            candidate_series.append(
+                {
+                    "script_index": script_index,
+                    "chart_index": chart_index,
+                    "points": cleaned,
+                    "count": len(cleaned),
+                    "first": first_timestamp,
+                    "last": last_timestamp,
+                }
+            )
 
     # ========================================================
-    # Select best candidate
+    # NO CANDIDATE
     # ========================================================
 
     if not candidate_series:
 
+        print(
+            "❌ TGJU: no chart candidates found.",
+            flush=True,
+        )
+
         return []
 
-    # طولانی‌ترین سری معمولاً سری اصلی نمودار است.
-    best_series = max(
+    # ========================================================
+    # DIAGNOSTIC — SHOW CANDIDATES
+    # ========================================================
+
+    print(
+        "",
+        flush=True,
+    )
+
+    print(
+        "🔎 TGJU CHART CANDIDATES:",
+        len(candidate_series),
+        flush=True,
+    )
+
+    print(
+        "-" * 70,
+        flush=True,
+    )
+
+    for index, candidate in enumerate(
         candidate_series,
-        key=len,
+        start=1,
+    ):
+
+        print(
+            f"   #{index} "
+            f"| points={candidate['count']} "
+            f"| first={candidate['first'].isoformat()} "
+            f"| last={candidate['last'].isoformat()}",
+            flush=True,
+        )
+
+    print(
+        "-" * 70,
+        flush=True,
     )
 
-    # --------------------------------------------------------
-    # Remove duplicate timestamps
-    # --------------------------------------------------------
+    # ========================================================
+    # SELECT BEST SERIES
+    # ========================================================
+    #
+    # قبلاً:
+    #
+    #     max(candidate_series, key=len)
+    #
+    # این اشتباه بود.
+    #
+    # حالا ابتدا جدیدترین timestamp را معیار قرار می‌دهیم.
+    #
+    # ========================================================
 
-    unique = {}
-
-    for point in best_series:
-
-        unique[
-            point["timestamp_ms"]
-        ] = point
-
-    result = list(
-        unique.values()
+    candidate_series.sort(
+        key=lambda candidate: (
+            candidate["last"],
+            candidate["count"],
+        ),
+        reverse=True,
     )
 
-    result.sort(
-        key=lambda x: x["timestamp_ms"]
+    best_candidate = candidate_series[0]
+
+    result = best_candidate[
+        "points"
+    ]
+
+    # ========================================================
+    # FINAL DIAGNOSTIC
+    # ========================================================
+
+    print(
+        "✅ TGJU SELECTED SERIES:",
+        flush=True,
+    )
+
+    print(
+        f"   points={len(result)}",
+        flush=True,
+    )
+
+    print(
+        f"   first={result[0]['timestamp'].isoformat()}",
+        flush=True,
+    )
+
+    print(
+        f"   last={result[-1]['timestamp'].isoformat()}",
+        flush=True,
+    )
+
+    print(
+        "-" * 70,
+        flush=True,
     )
 
     return result
