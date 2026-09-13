@@ -41,7 +41,10 @@ from candle_engine import get_recent_candles
 
 from analysis.analysis_engine import (
     run_analysis,
-    format_analysis_summary,
+)
+
+from analysis.signal_formatter import (
+    format_signal_message,
 )
 
 from openpyxl import Workbook
@@ -2179,7 +2182,7 @@ async def analysis_command(
 
             return
 
-        message = format_analysis_summary(
+        message = format_signal_message(
             analysis
         )
 
