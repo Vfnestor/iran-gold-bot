@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from data.collectors.tgju import (
     fetch_tgju_page,
@@ -30,10 +30,24 @@ RIAL_TO_TOMAN = 10.0
 # SAFE HELPERS
 # ============================================================
 
-def _to_float(value: Any):
+def _to_float(
+    value: Any,
+) -> Optional[float]:
+    """
+    تبدیل امن مقدار به float.
+    """
+
     try:
         if value is None:
             return None
+
+        if isinstance(value, str):
+            value = (
+                value
+                .replace(",", "")
+                .replace("٬", "")
+                .replace(" ", "")
+            )
 
         number = float(value)
 
@@ -51,7 +65,16 @@ def _to_float(value: Any):
 
 def _normalize_timestamp(
     value: Any,
-) -> datetime | None:
+) -> Optional[datetime]:
+    """
+    نرمال‌سازی timestamp.
+
+    پشتیبانی از:
+    - datetime
+    - Unix seconds
+    - Unix milliseconds
+    - ISO datetime
+    """
 
     if isinstance(
         value,
@@ -62,17 +85,26 @@ def _normalize_timestamp(
                 tzinfo=timezone.utc
             )
 
-        return value
+        return value.astimezone(
+            timezone.utc
+        )
 
     if isinstance(
         value,
         (int, float),
     ):
         try:
+            number = float(value)
+
+            # Unix milliseconds
+            if number > 10_000_000_000:
+                number /= 1000.0
+
             return datetime.fromtimestamp(
-                float(value),
+                number,
                 tz=timezone.utc,
             )
+
         except Exception:
             return None
 
@@ -84,13 +116,45 @@ def _normalize_timestamp(
     if not text:
         return None
 
+    # --------------------------------------------------------
+    # ISO datetime
+    # --------------------------------------------------------
+
     try:
-        return datetime.fromisoformat(
+        parsed = datetime.fromisoformat(
             text.replace(
                 "Z",
                 "+00:00",
             )
         )
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(
+                tzinfo=timezone.utc
+            )
+
+        return parsed.astimezone(
+            timezone.utc
+        )
+
+    except Exception:
+        pass
+
+    # --------------------------------------------------------
+    # Numeric timestamp stored as string
+    # --------------------------------------------------------
+
+    try:
+        number = float(text)
+
+        if number > 10_000_000_000:
+            number /= 1000.0
+
+        return datetime.fromtimestamp(
+            number,
+            tz=timezone.utc,
+        )
+
     except Exception:
         return None
 
@@ -102,8 +166,24 @@ def _normalize_timestamp(
 def _normalize_points(
     series: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    """
+    تبدیل داده خام TGJU به نقاط استاندارد.
 
-    points = []
+    خروجی هر نقطه:
+
+    {
+        timestamp,
+        timestamp_ms,
+        price
+    }
+    """
+
+    points: List[
+        Dict[str, Any]
+    ] = []
+
+    rejected_timestamp = 0
+    rejected_price = 0
 
     for item in series:
 
@@ -113,20 +193,43 @@ def _normalize_points(
         ):
             continue
 
-        timestamp = _normalize_timestamp(
+        # ----------------------------------------------------
+        # Timestamp
+        # ----------------------------------------------------
+
+        raw_timestamp = (
             item.get("timestamp")
             or item.get("time")
             or item.get("datetime")
+            or item.get("date")
+            or item.get("created_at")
+        )
+
+        timestamp = _normalize_timestamp(
+            raw_timestamp
+        )
+
+        if timestamp is None:
+            rejected_timestamp += 1
+            continue
+
+        # ----------------------------------------------------
+        # Price
+        # ----------------------------------------------------
+
+        raw_price = (
+            item.get("price")
+            or item.get("value")
+            or item.get("close")
+            or item.get("last")
         )
 
         price = _to_float(
-            item.get("price")
+            raw_price
         )
 
-        if (
-            timestamp is None
-            or price is None
-        ):
+        if price is None:
+            rejected_price += 1
             continue
 
         # ----------------------------------------------------
@@ -160,11 +263,16 @@ def _normalize_points(
     )
 
     # --------------------------------------------------------
-    # Remove duplicate timestamps
-    # Keep latest value.
+    # Remove duplicate timestamps.
+    #
+    # If multiple values have the same timestamp,
+    # keep the latest one.
     # --------------------------------------------------------
 
-    unique = {}
+    unique: Dict[
+        int,
+        Dict[str, Any],
+    ] = {}
 
     for point in points:
 
@@ -172,14 +280,65 @@ def _normalize_points(
             point["timestamp_ms"]
         ] = point
 
-    return list(
-        sorted(
-            unique.values(),
-            key=lambda item: item[
-                "timestamp"
-            ],
-        )
+    normalized = list(
+        unique.values()
     )
+
+    normalized.sort(
+        key=lambda item: item[
+            "timestamp"
+        ]
+    )
+
+    # --------------------------------------------------------
+    # Diagnostic
+    # --------------------------------------------------------
+
+    print(
+        "📊 TGJU RAW SERIES:",
+        len(series),
+        flush=True,
+    )
+
+    print(
+        "📊 TGJU NORMALIZED POINTS:",
+        len(normalized),
+        flush=True,
+    )
+
+    print(
+        "⚠️ TGJU REJECTED TIMESTAMP:",
+        rejected_timestamp,
+        flush=True,
+    )
+
+    print(
+        "⚠️ TGJU REJECTED PRICE:",
+        rejected_price,
+        flush=True,
+    )
+
+    if normalized:
+
+        print(
+            "🕐 TGJU FIRST POINT:",
+            normalized[0]["timestamp"].isoformat(),
+            flush=True,
+        )
+
+        print(
+            "🕐 TGJU LAST POINT:",
+            normalized[-1]["timestamp"].isoformat(),
+            flush=True,
+        )
+
+        print(
+            "💰 TGJU LAST PRICE TOMAN:",
+            normalized[-1]["price"],
+            flush=True,
+        )
+
+    return normalized
 
 
 # ============================================================
@@ -190,6 +349,9 @@ def _floor_timestamp(
     timestamp: datetime,
     minutes: int,
 ) -> datetime:
+    """
+    قرار دادن timestamp روی ابتدای کندل.
+    """
 
     timestamp = timestamp.astimezone(
         timezone.utc
@@ -218,6 +380,11 @@ def _build_candles(
     points: List[Dict[str, Any]],
     timeframe_minutes: int,
 ) -> List[Dict[str, Any]]:
+    """
+    ساخت کندل فقط در حافظه.
+
+    هیچ Database operation در این تابع وجود ندارد.
+    """
 
     if not points:
         return []
@@ -243,18 +410,13 @@ def _build_candles(
             [],
         ).append(point)
 
-    candles = []
+    candles: List[
+        Dict[str, Any]
+    ] = []
 
     sorted_buckets = sorted(
         buckets.keys()
     )
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Only COMPLETED candles are returned.
-    #
-    # The current unfinished candle is ignored.
-    # --------------------------------------------------------
 
     now = datetime.now(
         timezone.utc
@@ -270,6 +432,10 @@ def _build_candles(
             bucket
             + timeframe_delta
         )
+
+        # ----------------------------------------------------
+        # فقط کندل کاملاً بسته
+        # ----------------------------------------------------
 
         if candle_end > now:
             continue
@@ -326,6 +492,30 @@ def get_live_candles(
     str,
     List[Dict[str, Any]],
 ]:
+    """
+    دریافت مستقیم داده TGJU و ساخت کندل‌های زنده.
+
+    مسیر:
+
+    TGJU
+      ↓
+    raw intraday series
+      ↓
+    normalization
+      ↓
+    last 60 minutes
+      ↓
+    5m / 15m / 1h
+      ↓
+    RAM
+
+    هیچ خواندن یا نوشتنی از gold_candles انجام نمی‌شود.
+    """
+
+    print(
+        "📡 LIVE CANDLES: requesting TGJU...",
+        flush=True,
+    )
 
     # --------------------------------------------------------
     # 1. Request TGJU DIRECTLY
@@ -334,6 +524,11 @@ def get_live_candles(
     response = fetch_tgju_page()
 
     response.raise_for_status()
+
+    print(
+        "✅ LIVE CANDLES: TGJU response received.",
+        flush=True,
+    )
 
     # --------------------------------------------------------
     # 2. Extract source intraday series
@@ -349,8 +544,14 @@ def get_live_candles(
             "price series."
         )
 
+    print(
+        "📈 LIVE CANDLES: extracted points:",
+        len(series),
+        flush=True,
+    )
+
     # --------------------------------------------------------
-    # 3. Normalize prices and timestamps
+    # 3. Normalize timestamps and prices
     # --------------------------------------------------------
 
     points = _normalize_points(
@@ -364,7 +565,7 @@ def get_live_candles(
         )
 
     # --------------------------------------------------------
-    # 4. Take ONLY the last requested hour
+    # 4. Take ONLY the requested window
     # --------------------------------------------------------
 
     latest_timestamp = points[-1][
@@ -387,6 +588,20 @@ def get_live_candles(
         )
     ]
 
+    print(
+        "⏱️ LIVE WINDOW:",
+        window_start.isoformat(),
+        "→",
+        latest_timestamp.isoformat(),
+        flush=True,
+    )
+
+    print(
+        "📊 LIVE POINTS IN WINDOW:",
+        len(recent_points),
+        flush=True,
+    )
+
     if not recent_points:
         raise RuntimeError(
             "No TGJU points found inside "
@@ -399,21 +614,47 @@ def get_live_candles(
 
     candles_5m = _build_candles(
         recent_points,
-        5,
+        TIMEFRAMES["5m"],
     )
 
     candles_15m = _build_candles(
         recent_points,
-        15,
+        TIMEFRAMES["15m"],
     )
 
     candles_1h = _build_candles(
         recent_points,
-        60,
+        TIMEFRAMES["1h"],
     )
 
     # --------------------------------------------------------
-    # 6. Return only memory objects.
+    # 6. Diagnostic
+    # --------------------------------------------------------
+
+    print(
+        "🕯️ LIVE CANDLES:",
+        f"5m={len(candles_5m)}",
+        f"15m={len(candles_15m)}",
+        f"1h={len(candles_1h)}",
+        flush=True,
+    )
+
+    if candles_5m:
+
+        print(
+            "🕯️ 5M FIRST:",
+            candles_5m[0]["timestamp"].isoformat(),
+            flush=True,
+        )
+
+        print(
+            "🕯️ 5M LAST:",
+            candles_5m[-1]["timestamp"].isoformat(),
+            flush=True,
+        )
+
+    # --------------------------------------------------------
+    # 7. Return memory objects only.
     #
     # NO database read.
     # NO database write.
@@ -436,8 +677,14 @@ def get_live_candle_diagnostic(
         List[Dict[str, Any]],
     ],
 ) -> Dict[str, Any]:
+    """
+    وضعیت کندل‌های زنده.
+    """
 
-    result = {}
+    result: Dict[
+        str,
+        Any,
+    ] = {}
 
     for timeframe in (
         "5m",
@@ -465,3 +712,16 @@ def get_live_candle_diagnostic(
         }
 
     return result
+
+
+# ============================================================
+# EXPORTS
+# ============================================================
+
+__all__ = [
+    "WINDOW_MINUTES",
+    "TIMEFRAMES",
+    "RIAL_TO_TOMAN",
+    "get_live_candles",
+    "get_live_candle_diagnostic",
+]
