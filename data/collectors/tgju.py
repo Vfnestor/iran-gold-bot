@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin, urlparse
@@ -14,33 +15,29 @@ from database import save_tgju_price_points
 
 TGJU_URL = "https://www.tgju.org/profile/geram18"
 
+TGJU_LIVE_URL = "https://call5.tgju.org/ajax.json"
+
 REQUEST_TIMEOUT = 15
 
-MAX_EXTERNAL_SCRIPTS = 30
-MAX_ENDPOINTS_TO_PRINT = 100
+# فقط چند endpoint مهم را بررسی می‌کنیم
+MAX_ENDPOINTS_TO_PROBE = 25
 
-# ------------------------------------------------------------
-# IMPORTANT:
-# The HTML chart currently contains a long historical series.
-# We must NOT feed that entire history into the intraday
-# candle builder.
-#
-# Only recent points are allowed to be saved as raw intraday
-# data.
-# ------------------------------------------------------------
+# حداکثر اسکریپت خارجی برای بررسی
+MAX_EXTERNAL_SCRIPTS = 20
 
-INTRADAY_SAVE_WINDOW_HOURS = 6
-
-# Maximum acceptable gap between consecutive points for a
-# series to be considered intraday.
-#
-# This does NOT create candles. It only protects the database
-# from historical/daily TGJU points.
+# داده‌ای که بیشتر از این فاصله داشته باشد intraday نیست
 MAX_INTRADAY_GAP_SECONDS = 15 * 60
 
-# Minimum number of points required for an intraday segment.
+# حداقل تعداد نقطه برای ذخیره
 MIN_INTRADAY_POINTS = 2
 
+# پنجره قابل قبول برای داده intraday
+INTRADAY_SAVE_WINDOW_HOURS = 6
+
+
+# ============================================================
+# HEADERS
+# ============================================================
 
 HEADERS = {
     "User-Agent": (
@@ -52,8 +49,10 @@ HEADERS = {
         "text/html,application/xhtml+xml,application/xml;"
         "q=0.9,image/avif,image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.tgju.org/",
+    "Accept-Language": (
+        "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7"
+    ),
+    "Referer": TGJU_URL,
 }
 
 
@@ -75,20 +74,22 @@ def fetch_tgju_page():
 
 
 # ============================================================
-# DEBUG HELPERS
+# URL HELPERS
 # ============================================================
 
-def _normalize_url(url, base_url=TGJU_URL):
+def _normalize_url(
+    url,
+    base_url=TGJU_URL,
+):
 
     if not url:
         return None
 
-    url = url.strip()
+    url = str(url).strip()
 
-    if not url:
-        return None
-
-    url = url.strip("\"'` ")
+    url = url.strip(
+        "\"'` "
+    )
 
     if not url:
         return None
@@ -102,6 +103,26 @@ def _normalize_url(url, base_url=TGJU_URL):
         )
     ):
         return None
+
+    url = url.replace(
+        "\\/",
+        "/",
+    )
+
+    url = url.replace(
+        "\\u002F",
+        "/",
+    )
+
+    url = url.replace(
+        "\\u002f",
+        "/",
+    )
+
+    url = url.replace(
+        "&amp;",
+        "&",
+    )
 
     full_url = urljoin(
         base_url,
@@ -149,7 +170,6 @@ def _looks_like_endpoint(url):
         "candl",
         "ohlc",
         "series",
-        "profile",
         "getdata",
         "get_data",
         "fetch",
@@ -163,38 +183,515 @@ def _looks_like_endpoint(url):
     )
 
 
-def _clean_js_url(raw_url):
+# ============================================================
+# CURRENT PRICE FROM HTML
+# ============================================================
 
-    if not raw_url:
+def extract_current_price(html):
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    text = soup.get_text(
+        " ",
+        strip=True,
+    )
+
+    patterns = [
+        r"نرخ فعلی\s*[:：]?\s*([\d,]+)",
+        r"قیمت\s*[:：]?\s*([\d,]+)",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+        )
+
+        if not match:
+            continue
+
+        price = int(
+            match.group(1).replace(
+                ",",
+                "",
+            )
+        )
+
+        if price > 0:
+            return price
+
+    raise RuntimeError(
+        "Could not find 18K gold price on TGJU."
+    )
+
+
+# ============================================================
+# LIVE PRICE FROM CALL5
+# ============================================================
+
+def fetch_live_call5():
+
+    try:
+
+        response = requests.get(
+            TGJU_LIVE_URL,
+            headers={
+                **HEADERS,
+                "Referer": TGJU_URL,
+                "Accept": "application/json,text/plain,*/*",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        print(
+            f"📡 TGJU CALL5 HTTP: "
+            f"{response.status_code}",
+            flush=True,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        current = data.get(
+            "current",
+            {},
+        )
+
+        geram18 = current.get(
+            "geram18"
+        )
+
+        if not geram18:
+            print(
+                "⚠️ CALL5: geram18 not found.",
+                flush=True,
+            )
+
+            return None
+
+        price_raw = (
+            geram18.get("p")
+            or geram18.get("price")
+            or geram18.get("value")
+        )
+
+        if price_raw is None:
+            print(
+                "⚠️ CALL5: geram18 price field not found.",
+                flush=True,
+            )
+
+            return None
+
+        price_text = str(
+            price_raw
+        )
+
+        price_text = re.sub(
+            r"[^\d.]",
+            "",
+            price_text,
+        )
+
+        if not price_text:
+            return None
+
+        price = float(
+            price_text
+        )
+
+        if price <= 0:
+            return None
+
+        timestamp_ms = None
+
+        for key in (
+            "ts",
+            "timestamp",
+            "time",
+            "t",
+        ):
+
+            value = geram18.get(
+                key
+            )
+
+            if value is None:
+                continue
+
+            try:
+
+                timestamp_ms = int(
+                    float(value)
+                )
+
+                if timestamp_ms < 10_000_000_000:
+                    timestamp_ms *= 1000
+
+                break
+
+            except Exception:
+                continue
+
+        if timestamp_ms:
+
+            timestamp = _timestamp_from_ms(
+                timestamp_ms
+            )
+
+        else:
+
+            timestamp = datetime.now(
+                timezone.utc
+            )
+
+            timestamp_ms = int(
+                timestamp.timestamp()
+                * 1000
+            )
+
+        point = {
+            "timestamp": timestamp,
+            "timestamp_ms": timestamp_ms,
+            "price": price,
+        }
+
+        print(
+            "🟢 TGJU CALL5 LIVE:",
+            f"{price:,.0f}",
+            flush=True,
+        )
+
+        print(
+            f"   timestamp={timestamp.isoformat()}",
+            flush=True,
+        )
+
+        return point
+
+    except Exception as error:
+
+        print(
+            "⚠️ TGJU CALL5 ERROR:",
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
         return None
 
-    raw_url = raw_url.strip()
 
-    raw_url = raw_url.replace(
-        "\\/",
-        "/",
+# ============================================================
+# TIMESTAMP
+# ============================================================
+
+def _timestamp_from_ms(
+    timestamp_ms,
+):
+
+    try:
+
+        value = float(
+            timestamp_ms
+        )
+
+        if value < 10_000_000_000:
+            value *= 1000
+
+        return datetime.fromtimestamp(
+            value / 1000,
+            tz=timezone.utc,
+        )
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# GENERIC PRICE / TIMESTAMP PARSER
+# ============================================================
+
+def _normalize_price(value):
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        bool,
+    ):
+        return None
+
+    if isinstance(
+        value,
+        (int, float),
+    ):
+
+        price = float(value)
+
+    else:
+
+        text = str(value)
+
+        text = text.replace(
+            ",",
+            "",
+        )
+
+        text = re.sub(
+            r"[^\d.]",
+            "",
+            text,
+        )
+
+        if not text:
+            return None
+
+        try:
+            price = float(text)
+
+        except Exception:
+            return None
+
+    if price <= 0:
+        return None
+
+    return price
+
+
+def _looks_like_timestamp(
+    value,
+):
+
+    try:
+
+        number = float(
+            value
+        )
+
+    except Exception:
+
+        return False
+
+    return (
+        1_000_000_000
+        <= number
+        <= 2_000_000_000_000
     )
 
-    raw_url = raw_url.replace(
-        "\\u002F",
-        "/",
+
+def _extract_points_from_json(
+    data,
+):
+
+    points = []
+
+    def add_point(
+        timestamp_value,
+        price_value,
+    ):
+
+        if not _looks_like_timestamp(
+            timestamp_value
+        ):
+            return
+
+        price = _normalize_price(
+            price_value
+        )
+
+        if price is None:
+            return
+
+        timestamp = _timestamp_from_ms(
+            timestamp_value
+        )
+
+        if timestamp is None:
+            return
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+        if timestamp > (
+            now
+            + timedelta(
+                minutes=5
+            )
+        ):
+            return
+
+        if timestamp < (
+            now
+            - timedelta(
+                days=30
+            )
+        ):
+            return
+
+        timestamp_ms = int(
+            timestamp.timestamp()
+            * 1000
+        )
+
+        points.append(
+            {
+                "timestamp": timestamp,
+                "timestamp_ms": timestamp_ms,
+                "price": price,
+            }
+        )
+
+    def walk(
+        obj,
+    ):
+
+        if isinstance(
+            obj,
+            dict,
+        ):
+
+            # --------------------------------------------
+            # Common object forms
+            # --------------------------------------------
+
+            timestamp_keys = (
+                "timestamp",
+                "timestamp_ms",
+                "time",
+                "ts",
+                "t",
+                "date",
+                "datetime",
+            )
+
+            price_keys = (
+                "price",
+                "p",
+                "value",
+                "close",
+                "c",
+                "last",
+                "rate",
+            )
+
+            timestamp_value = None
+            price_value = None
+
+            for key in timestamp_keys:
+
+                if key in obj:
+
+                    timestamp_value = obj.get(
+                        key
+                    )
+
+                    if _looks_like_timestamp(
+                        timestamp_value
+                    ):
+                        break
+
+            for key in price_keys:
+
+                if key in obj:
+
+                    candidate = obj.get(
+                        key
+                    )
+
+                    if _normalize_price(
+                        candidate
+                    ) is not None:
+
+                        price_value = candidate
+                        break
+
+            if (
+                timestamp_value is not None
+                and price_value is not None
+            ):
+
+                add_point(
+                    timestamp_value,
+                    price_value,
+                )
+
+            for value in obj.values():
+
+                walk(
+                    value
+                )
+
+        elif isinstance(
+            obj,
+            list,
+        ):
+
+            # --------------------------------------------
+            # Array format:
+            # [timestamp, price]
+            # --------------------------------------------
+
+            if len(obj) >= 2:
+
+                first = obj[0]
+                second = obj[1]
+
+                if (
+                    _looks_like_timestamp(first)
+                    and _normalize_price(second)
+                    is not None
+                ):
+
+                    add_point(
+                        first,
+                        second,
+                    )
+
+            for item in obj:
+
+                walk(
+                    item
+                )
+
+    walk(
+        data
     )
 
-    raw_url = raw_url.replace(
-        "\\u002f",
-        "/",
+    # --------------------------------------------------------
+    # Deduplicate
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for point in points:
+
+        unique[
+            point["timestamp_ms"]
+        ] = point
+
+    result = list(
+        unique.values()
     )
 
-    raw_url = raw_url.replace(
-        "&amp;",
-        "&",
+    result.sort(
+        key=lambda x: x[
+            "timestamp_ms"
+        ]
     )
 
-    return _normalize_url(
-        raw_url,
-        TGJU_URL,
-    )
+    return result
 
+
+# ============================================================
+# URL EXTRACTION FROM JAVASCRIPT
+# ============================================================
 
 def _extract_urls_from_text(
     text,
@@ -206,38 +703,35 @@ def _extract_urls_from_text(
     if not text:
         return urls
 
-    # --------------------------------------------------------
-    # Absolute URLs
-    # --------------------------------------------------------
-
-    absolute_patterns = [
+    patterns = [
         r"https?://[^\s\"'`<>\\]+",
         r"https?:\\/\\/[^\\s\"'`<>]+",
     ]
 
-    for pattern in absolute_patterns:
+    for pattern in patterns:
 
-        for match in re.findall(
+        matches = re.findall(
             pattern,
             text,
             flags=re.IGNORECASE,
-        ):
+        )
 
-            url = _clean_js_url(
-                match
+        for match in matches:
+
+            url = _normalize_url(
+                match,
+                base_url,
             )
 
             if url:
                 urls.add(url)
 
     # --------------------------------------------------------
-    # Relative URLs
+    # Relative strings
     # --------------------------------------------------------
 
     relative_pattern = (
-        r"""["'`]"""
-        r"""([^"'`]{1,500})"""
-        r"""["'`]"""
+        r"""["'`]([^"'`]{1,500})["'`]"""
     )
 
     for match in re.findall(
@@ -263,8 +757,9 @@ def _extract_urls_from_text(
         ):
             continue
 
-        url = _clean_js_url(
-            candidate
+        url = _normalize_url(
+            candidate,
+            base_url,
         )
 
         if url:
@@ -273,16 +768,18 @@ def _extract_urls_from_text(
     return urls
 
 
-def _extract_endpoint_candidates(text):
+# ============================================================
+# JS ENDPOINT EXTRACTION
+# ============================================================
+
+def _extract_endpoint_candidates(
+    text,
+):
 
     candidates = set()
 
     if not text:
         return candidates
-
-    # --------------------------------------------------------
-    # Direct URLs
-    # --------------------------------------------------------
 
     candidates.update(
         _extract_urls_from_text(
@@ -290,96 +787,42 @@ def _extract_endpoint_candidates(text):
         )
     )
 
-    # --------------------------------------------------------
-    # fetch(...)
-    # --------------------------------------------------------
+    patterns = [
 
-    fetch_patterns = [
+        # fetch(...)
         r"""fetch\s*\(\s*["'`]([^"'`]+)["'`]""",
-        r"""fetch\s*\(\s*`([^`]+)`""",
-    ]
 
-    # --------------------------------------------------------
-    # $.ajax(...)
-    # --------------------------------------------------------
-
-    ajax_patterns = [
+        # $.ajax({ url: ... })
         (
             r"""\$\.ajax\s*\(\s*\{[\s\S]{0,3000}?"""
             r"""url\s*:\s*["'`]([^"'`]+)["'`]"""
         ),
+
+        # $.get / $.getJSON / $.post
         (
-            r"""\bajax\s*\(\s*\{[\s\S]{0,3000}?"""
-            r"""url\s*:\s*["'`]([^"'`]+)["'`]"""
+            r"""\$\.(?:get|getJSON|post)\s*"""
+            r"""\(\s*["'`]([^"'`]+)["'`]"""
         ),
-    ]
 
-    # --------------------------------------------------------
-    # $.get / $.post
-    # --------------------------------------------------------
-
-    jquery_patterns = [
-        r"""\$\.(?:get|getJSON|post)\s*\(\s*["'`]([^"'`]+)["'`]""",
-        r"""\b(?:get|getJSON|post)\s*\(\s*["'`]([^"'`]+)["'`]""",
-    ]
-
-    # --------------------------------------------------------
-    # axios
-    # --------------------------------------------------------
-
-    axios_patterns = [
+        # axios
         (
             r"""axios\.(?:get|post|put|patch|delete)"""
             r"""\s*\(\s*["'`]([^"'`]+)["'`]"""
         ),
-        (
-            r"""axios\s*\(\s*\{[\s\S]{0,3000}?"""
-            r"""url\s*:\s*["'`]([^"'`]+)["'`]"""
-        ),
-    ]
 
-    # --------------------------------------------------------
-    # XMLHttpRequest
-    # --------------------------------------------------------
-
-    xhr_patterns = [
-        (
-            r"""\.open\s*\(\s*["'`]"""
-            r"""(?:GET|POST|PUT|PATCH|DELETE)["'`]"""
-            r"""\s*,\s*["'`]([^"'`]+)["'`]"""
-        ),
-        (
-            r"""\.open\s*\(\s*["'`]([^"'`]+)["'`]"""
-            r"""\s*,\s*["'`]([^"'`]+)["'`]"""
-        ),
-    ]
-
-    # --------------------------------------------------------
-    # Generic URL patterns
-    # --------------------------------------------------------
-
-    generic_patterns = [
+        # generic url
         r"""\burl\s*:\s*["'`]([^"'`]+)["'`]""",
+
         r"""\bendpoint\s*:\s*["'`]([^"'`]+)["'`]""",
-        r"""\bendpointUrl\s*:\s*["'`]([^"'`]+)["'`]""",
-        r"""\bapiUrl\s*:\s*["'`]([^"'`]+)["'`]""",
-        r"""\bapi_url\s*:\s*["'`]([^"'`]+)["'`]""",
+
         r"""\bdataUrl\s*:\s*["'`]([^"'`]+)["'`]""",
-        r"""\bdata_url\s*:\s*["'`]([^"'`]+)["'`]""",
+
         r"""\bajaxUrl\s*:\s*["'`]([^"'`]+)["'`]""",
-        r"""\bajax_url\s*:\s*["'`]([^"'`]+)["'`]""",
+
+        r"""\bapiUrl\s*:\s*["'`]([^"'`]+)["'`]""",
     ]
 
-    all_patterns = (
-        fetch_patterns
-        + ajax_patterns
-        + jquery_patterns
-        + axios_patterns
-        + xhr_patterns
-        + generic_patterns
-    )
-
-    for pattern in all_patterns:
+    for pattern in patterns:
 
         try:
 
@@ -389,8 +832,7 @@ def _extract_endpoint_candidates(text):
                 flags=re.IGNORECASE,
             )
 
-        except re.error:
-
+        except Exception:
             continue
 
         for match in matches:
@@ -407,702 +849,84 @@ def _extract_endpoint_candidates(text):
 
             for value in values:
 
-                url = _clean_js_url(
+                url = _normalize_url(
                     value
                 )
 
                 if url:
-                    candidates.add(url)
+                    candidates.add(
+                        url
+                    )
 
     return candidates
 
 
-def _print_endpoint_context(
-    text,
-    endpoint,
-    label="",
+# ============================================================
+# PRIORITY SCORING
+# ============================================================
+
+def _endpoint_score(
+    url,
 ):
 
-    if not text or not endpoint:
-        return
+    lowered = url.lower()
 
-    search_values = [
-        endpoint,
-        endpoint.replace(
-            "/",
-            "\\/",
-        ),
-    ]
+    score = 0
 
-    position = -1
+    # مهم‌ترین کلمات
+    if "geram18" in lowered:
+        score += 100
 
-    for value in search_values:
+    if "chart" in lowered:
+        score += 50
 
-        position = text.find(
-            value
-        )
+    if "history" in lowered:
+        score += 45
 
-        if position >= 0:
-            break
+    if "historical" in lowered:
+        score += 45
 
-    if position < 0:
-        return
+    if "ohlc" in lowered:
+        score += 45
 
-    start = max(
-        0,
-        position - 180,
-    )
+    if "candle" in lowered:
+        score += 45
 
-    end = min(
-        len(text),
-        position + len(endpoint) + 300,
-    )
+    if "series" in lowered:
+        score += 40
 
-    context = text[
-        start:end
-    ]
+    if "price" in lowered:
+        score += 25
 
-    context = re.sub(
-        r"\s+",
-        " ",
-        context,
-    )
+    if "market" in lowered:
+        score += 20
 
-    print(
-        f"   {label}CONTEXT: "
-        f"{context[:700]}",
-        flush=True,
-    )
+    if "data" in lowered:
+        score += 15
+
+    if "ajax" in lowered:
+        score += 15
+
+    if "api" in lowered:
+        score += 10
+
+    # endpointهای unrelated مثل search را پایین می‌آوریم
+    if "newsearch" in lowered:
+        score -= 100
+
+    if "search" in lowered:
+        score -= 30
+
+    return score
 
 
 # ============================================================
-# TGJU ENDPOINT DEBUG
+# EXTRACT HISTORICAL SERIES FROM HTML
 # ============================================================
 
-def debug_tgju_endpoints(
+def extract_price_series(
     html,
-    page_url=TGJU_URL,
 ):
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    print(
-        "🔬 TGJU ENDPOINT DISCOVERY DEBUG",
-        flush=True,
-    )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    print(
-        f"PAGE: {page_url}",
-        flush=True,
-    )
-
-    print(
-        f"HTML SIZE: {len(html):,} chars",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    # ========================================================
-    # 1. URLs موجود در HTML
-    # ========================================================
-
-    html_urls = _extract_urls_from_text(
-        html,
-        page_url,
-    )
-
-    endpoint_urls = {
-        url
-        for url in html_urls
-        if _looks_like_endpoint(url)
-    }
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        f"🌐 HTML URLS FOUND: "
-        f"{len(html_urls)}",
-        flush=True,
-    )
-
-    print(
-        f"🎯 POSSIBLE ENDPOINT URLS: "
-        f"{len(endpoint_urls)}",
-        flush=True,
-    )
-
-    if endpoint_urls:
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "TGJU POSSIBLE ENDPOINTS FROM HTML:",
-            flush=True,
-        )
-
-        for index, url in enumerate(
-            sorted(endpoint_urls),
-            start=1,
-        ):
-
-            if index > MAX_ENDPOINTS_TO_PRINT:
-
-                print(
-                    f"   ... more than "
-                    f"{MAX_ENDPOINTS_TO_PRINT} endpoints",
-                    flush=True,
-                )
-
-                break
-
-            print(
-                f"   [{index}] {url}",
-                flush=True,
-            )
-
-    # ========================================================
-    # 2. Inline JavaScript
-    # ========================================================
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    print(
-        "📜 INLINE JAVASCRIPT SCAN",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    inline_scripts = []
-
-    for script_index, script in enumerate(
-        soup.find_all("script")
-    ):
-
-        if script.get("src"):
-            continue
-
-        script_text = script.string
-
-        if not script_text:
-            script_text = script.get_text()
-
-        if not script_text:
-            continue
-
-        inline_scripts.append(
-            (
-                script_index,
-                script_text,
-            )
-        )
-
-    print(
-        f"INLINE SCRIPTS: "
-        f"{len(inline_scripts)}",
-        flush=True,
-    )
-
-    inline_candidates = set()
-
-    for script_index, script_text in inline_scripts:
-
-        candidates = _extract_endpoint_candidates(
-            script_text
-        )
-
-        interesting = {
-            url
-            for url in candidates
-            if _looks_like_endpoint(url)
-        }
-
-        if not interesting:
-            continue
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            f"📌 INLINE SCRIPT #{script_index}",
-            flush=True,
-        )
-
-        for url in sorted(
-            interesting
-        ):
-
-            inline_candidates.add(
-                url
-            )
-
-            print(
-                f"   → {url}",
-                flush=True,
-            )
-
-            _print_endpoint_context(
-                script_text,
-                url,
-                label="   ",
-            )
-
-    # ========================================================
-    # 3. External JavaScript
-    # ========================================================
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    print(
-        "📦 EXTERNAL JAVASCRIPT SCAN",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    script_urls = []
-
-    for script in soup.find_all(
-        "script"
-    ):
-
-        src = script.get(
-            "src"
-        )
-
-        if not src:
-            continue
-
-        full_url = _normalize_url(
-            src,
-            page_url,
-        )
-
-        if not full_url:
-            continue
-
-        if full_url not in script_urls:
-
-            script_urls.append(
-                full_url
-            )
-
-    print(
-        f"EXTERNAL SCRIPTS FOUND: "
-        f"{len(script_urls)}",
-        flush=True,
-    )
-
-    external_candidates = set()
-
-    scripts_checked = 0
-
-    for script_url in script_urls:
-
-        if (
-            scripts_checked
-            >= MAX_EXTERNAL_SCRIPTS
-        ):
-
-            print(
-                f"⚠️ Reached "
-                f"MAX_EXTERNAL_SCRIPTS="
-                f"{MAX_EXTERNAL_SCRIPTS}",
-                flush=True,
-            )
-
-            break
-
-        scripts_checked += 1
-
-        print(
-            "",
-            flush=True,
-        )
-
-        print(
-            f"📥 JS #{scripts_checked}: "
-            f"{script_url}",
-            flush=True,
-        )
-
-        try:
-
-            js_response = requests.get(
-                script_url,
-                headers={
-                    **HEADERS,
-                    "Referer": page_url,
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            print(
-                f"   HTTP: "
-                f"{js_response.status_code} "
-                f"| SIZE: "
-                f"{len(js_response.text):,}",
-                flush=True,
-            )
-
-            if not js_response.ok:
-                continue
-
-            js_text = js_response.text
-
-            candidates = _extract_endpoint_candidates(
-                js_text
-            )
-
-            interesting = {
-                url
-                for url in candidates
-                if _looks_like_endpoint(url)
-            }
-
-            if not interesting:
-
-                filename = (
-                    urlparse(
-                        script_url
-                    )
-                    .path
-                    .lower()
-                )
-
-                if any(
-                    keyword in filename
-                    for keyword in (
-                        "chart",
-                        "graph",
-                        "profile",
-                        "market",
-                        "price",
-                        "data",
-                        "api",
-                    )
-                ):
-
-                    print(
-                        "   ⚠️ Interesting JS filename "
-                        "but no endpoint string found.",
-                        flush=True,
-                    )
-
-                continue
-
-            for url in sorted(
-                interesting
-            ):
-
-                external_candidates.add(
-                    url
-                )
-
-                print(
-                    f"   🎯 ENDPOINT: "
-                    f"{url}",
-                    flush=True,
-                )
-
-                _print_endpoint_context(
-                    js_text,
-                    url,
-                    label="      ",
-                )
-
-        except Exception as error:
-
-            print(
-                f"   ⚠️ JS FETCH ERROR: "
-                f"{type(error).__name__}: "
-                f"{error}",
-                flush=True,
-            )
-
-    # ========================================================
-    # 4. TGJU keyword scan
-    # ========================================================
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    print(
-        "🔎 TGJU CHART KEYWORD SCAN",
-        flush=True,
-    )
-
-    print(
-        "-" * 80,
-        flush=True,
-    )
-
-    combined_text = html
-
-    keyword_patterns = [
-        "chartData",
-        "msHighcharts",
-        "Highcharts",
-        "candlestick",
-        "ohlc",
-        "series",
-        "ajax",
-        "fetch(",
-        "axios",
-        "XMLHttpRequest",
-        "getJSON",
-        "api/",
-        "/api/",
-        "chart/",
-        "/chart/",
-        "graph/",
-        "/graph/",
-        "history",
-        "historical",
-        "price",
-        "prices",
-    ]
-
-    for keyword in keyword_patterns:
-
-        count = combined_text.lower().count(
-            keyword.lower()
-        )
-
-        if count > 0:
-
-            print(
-                f"   {keyword:<22} "
-                f"=> {count}",
-                flush=True,
-            )
-
-    # ========================================================
-    # 5. Final endpoint list
-    # ========================================================
-
-    all_candidates = (
-        endpoint_urls
-        | inline_candidates
-        | external_candidates
-    )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    print(
-        "🎯 TGJU API / AJAX / CHART ENDPOINTS",
-        flush=True,
-    )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    if not all_candidates:
-
-        print(
-            "❌ NO POSSIBLE ENDPOINT FOUND.",
-            flush=True,
-        )
-
-        print(
-            "The endpoint may be constructed "
-            "dynamically or loaded by another mechanism.",
-            flush=True,
-        )
-
-    else:
-
-        for index, url in enumerate(
-            sorted(all_candidates),
-            start=1,
-        ):
-
-            if index > MAX_ENDPOINTS_TO_PRINT:
-
-                print(
-                    f"... "
-                    f"{len(all_candidates) - MAX_ENDPOINTS_TO_PRINT} "
-                    f"more endpoints hidden.",
-                    flush=True,
-                )
-
-                break
-
-            print(
-                f"[{index}] {url}",
-                flush=True,
-            )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    print(
-        "🔬 ENDPOINT DISCOVERY FINISHED",
-        flush=True,
-    )
-
-    print(
-        "=" * 80,
-        flush=True,
-    )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    return sorted(
-        all_candidates
-    )
-
-
-# ============================================================
-# CURRENT PRICE
-# ============================================================
-
-def extract_current_price(html):
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    text = soup.get_text(
-        " ",
-        strip=True,
-    )
-
-    match = re.search(
-        r"نرخ فعلی\s*[:：]?\s*([\d,]+)",
-        text,
-    )
-
-    if not match:
-
-        raise RuntimeError(
-            "Could not find 18K gold price on TGJU."
-        )
-
-    price = int(
-        match.group(1).replace(
-            ",",
-            "",
-        )
-    )
-
-    if price <= 0:
-
-        raise RuntimeError(
-            "Invalid TGJU gold price."
-        )
-
-    return price
-
-
-# ============================================================
-# TIMESTAMP HELPER
-# ============================================================
-
-def _timestamp_from_ms(
-    timestamp_ms,
-):
-
-    try:
-
-        return datetime.fromtimestamp(
-            int(timestamp_ms) / 1000,
-            tz=timezone.utc,
-        )
-
-    except Exception:
-
-        return None
-
-
-# ============================================================
-# FIND TGJU PRICE SERIES
-# ============================================================
-
-def extract_price_series(html):
-
-    """
-    استخراج سری‌های قیمت از chartDataهای TGJU.
-
-    توجه:
-    این تابع ممکن است همچنان کل history را استخراج کند.
-    اما قبل از ذخیره، فقط بخش intraday اخیر فیلتر می‌شود.
-    """
 
     soup = BeautifulSoup(
         html,
@@ -1133,10 +957,7 @@ def extract_price_series(html):
         if "chartData" not in script_text:
             continue
 
-        if "msHighcharts" not in script_text:
-            continue
-
-        chart_positions = [
+        positions = [
             match.start()
             for match in re.finditer(
                 r"chartData\s*:",
@@ -1146,7 +967,7 @@ def extract_price_series(html):
         ]
 
         for chart_index, position in enumerate(
-            chart_positions
+            positions
         ):
 
             section = script_text[
@@ -1159,42 +980,27 @@ def extract_price_series(html):
                 section,
             )
 
-            if not matches:
-                continue
-
             points = []
 
             for timestamp_raw, price_raw in matches:
 
-                try:
-
-                    timestamp_ms = int(
-                        timestamp_raw
-                    )
-
-                    price = float(
-                        price_raw
-                    )
-
-                except ValueError:
-
-                    continue
-
-                if timestamp_ms <= 0:
-                    continue
-
-                if price <= 0:
-                    continue
-
                 timestamp = _timestamp_from_ms(
-                    timestamp_ms
+                    timestamp_raw
+                )
+
+                price = _normalize_price(
+                    price_raw
                 )
 
                 if timestamp is None:
                     continue
 
+                if price is None:
+                    continue
+
                 if timestamp > (
-                    now + timedelta(
+                    now
+                    + timedelta(
                         minutes=5
                     )
                 ):
@@ -1203,12 +1009,15 @@ def extract_price_series(html):
                 points.append(
                     {
                         "timestamp": timestamp,
-                        "timestamp_ms": timestamp_ms,
+                        "timestamp_ms": int(
+                            timestamp.timestamp()
+                            * 1000
+                        ),
                         "price": price,
                     }
                 )
 
-            if len(points) < 5:
+            if len(points) < 2:
                 continue
 
             unique = {}
@@ -1229,36 +1038,34 @@ def extract_price_series(html):
                 ]
             )
 
-            if len(cleaned) < 5:
-                continue
-
-            first_timestamp = cleaned[0][
-                "timestamp"
-            ]
-
-            last_timestamp = cleaned[-1][
-                "timestamp"
-            ]
-
             candidate_series.append(
                 {
                     "script_index": script_index,
                     "chart_index": chart_index,
                     "points": cleaned,
-                    "count": len(cleaned),
-                    "first": first_timestamp,
-                    "last": last_timestamp,
                 }
             )
 
     if not candidate_series:
 
         print(
-            "❌ TGJU: no chart candidates found.",
+            "❌ TGJU: no chartData series found.",
             flush=True,
         )
 
         return []
+
+    candidate_series.sort(
+        key=lambda candidate: (
+            candidate["points"][-1]["timestamp_ms"],
+            len(candidate["points"]),
+        ),
+        reverse=True,
+    )
+
+    best = candidate_series[0][
+        "points"
+    ]
 
     print(
         "",
@@ -1271,65 +1078,403 @@ def extract_price_series(html):
         flush=True,
     )
 
-    print(
-        "-" * 70,
-        flush=True,
-    )
-
     for index, candidate in enumerate(
         candidate_series,
         start=1,
     ):
 
+        points = candidate["points"]
+
         print(
             f"   #{index} "
-            f"| points={candidate['count']} "
-            f"| first={candidate['first'].isoformat()} "
-            f"| last={candidate['last'].isoformat()}",
+            f"| points={len(points)} "
+            f"| first={points[0]['timestamp'].isoformat()} "
+            f"| last={points[-1]['timestamp'].isoformat()}",
             flush=True,
         )
 
+    return best
+
+
+# ============================================================
+# PROBE ENDPOINT
+# ============================================================
+
+def _probe_endpoint(
+    url,
+):
+
+    try:
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            f"🔎 PROBE: {url}",
+            flush=True,
+        )
+
+        response = requests.get(
+            url,
+            headers={
+                **HEADERS,
+                "Referer": TGJU_URL,
+                "Accept": (
+                    "application/json,"
+                    "text/plain,*/*"
+                ),
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        print(
+            f"   HTTP={response.status_code} "
+            f"| size={len(response.content):,}",
+            flush=True,
+        )
+
+        if not response.ok:
+            return []
+
+        content_type = (
+            response.headers.get(
+                "content-type",
+                "",
+            ).lower()
+        )
+
+        # ----------------------------------------------------
+        # JSON
+        # ----------------------------------------------------
+
+        data = None
+
+        if (
+            "json" in content_type
+            or response.text.lstrip().startswith(
+                ("{", "[")
+            )
+        ):
+
+            try:
+                data = response.json()
+
+            except Exception:
+                data = None
+
+        if data is not None:
+
+            points = _extract_points_from_json(
+                data
+            )
+
+            print(
+                f"   📊 JSON POINTS: "
+                f"{len(points)}",
+                flush=True,
+            )
+
+            if points:
+
+                print(
+                    f"   FIRST: "
+                    f"{points[0]['timestamp'].isoformat()} "
+                    f"| {points[0]['price']:,.0f}",
+                    flush=True,
+                )
+
+                print(
+                    f"   LAST : "
+                    f"{points[-1]['timestamp'].isoformat()} "
+                    f"| {points[-1]['price']:,.0f}",
+                    flush=True,
+                )
+
+            return points
+
+        # ----------------------------------------------------
+        # Maybe HTML / JS containing chartData
+        # ----------------------------------------------------
+
+        if "chartData" in response.text:
+
+            points = extract_price_series(
+                response.text
+            )
+
+            if points:
+                return points
+
+        return []
+
+    except Exception as error:
+
+        print(
+            f"   ⚠️ PROBE ERROR: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+
+        return []
+
+
+# ============================================================
+# DISCOVER + TEST ENDPOINTS
+# ============================================================
+
+def discover_intraday_endpoints(
+    html,
+):
+
     print(
-        "-" * 70,
+        "",
         flush=True,
     )
 
-    candidate_series.sort(
-        key=lambda candidate: (
-            candidate["last"],
-            candidate["count"],
+    print(
+        "=" * 80,
+        flush=True,
+    )
+
+    print(
+        "🔬 TGJU LIVE / CHART ENDPOINT DISCOVERY",
+        flush=True,
+    )
+
+    print(
+        "=" * 80,
+        flush=True,
+    )
+
+    candidates = set()
+
+    # --------------------------------------------------------
+    # Known live endpoint
+    # --------------------------------------------------------
+
+    candidates.add(
+        TGJU_LIVE_URL
+    )
+
+    # --------------------------------------------------------
+    # URLs inside HTML
+    # --------------------------------------------------------
+
+    candidates.update(
+        _extract_urls_from_text(
+            html
+        )
+    )
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    # --------------------------------------------------------
+    # Inline scripts
+    # --------------------------------------------------------
+
+    for script in soup.find_all(
+        "script"
+    ):
+
+        if script.get("src"):
+            continue
+
+        text = script.string
+
+        if not text:
+            text = script.get_text()
+
+        if not text:
+            continue
+
+        candidates.update(
+            _extract_endpoint_candidates(
+                text
+            )
+        )
+
+    # --------------------------------------------------------
+    # External scripts
+    # --------------------------------------------------------
+
+    script_urls = []
+
+    for script in soup.find_all(
+        "script"
+    ):
+
+        src = script.get(
+            "src"
+        )
+
+        if not src:
+            continue
+
+        url = _normalize_url(
+            src,
+            TGJU_URL,
+        )
+
+        if url and url not in script_urls:
+            script_urls.append(
+                url
+            )
+
+    for script_url in script_urls[
+        :MAX_EXTERNAL_SCRIPTS
+    ]:
+
+        try:
+
+            response = requests.get(
+                script_url,
+                headers={
+                    **HEADERS,
+                    "Referer": TGJU_URL,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if not response.ok:
+                continue
+
+            js_text = response.text
+
+            # فقط JSهایی که احتمال ارتباط با chart دارند
+            lowered = js_text.lower()
+
+            interesting = any(
+                key in lowered
+                for key in (
+                    "chartdata",
+                    "reload_charts",
+                    "highcharts",
+                    "candlestick",
+                    "ohlc",
+                    "geram18",
+                    "chart",
+                )
+            )
+
+            if not interesting:
+                continue
+
+            candidates.update(
+                _extract_endpoint_candidates(
+                    js_text
+                )
+            )
+
+        except Exception:
+            continue
+
+    # --------------------------------------------------------
+    # Remove obviously unrelated endpoints
+    # --------------------------------------------------------
+
+    filtered = []
+
+    for url in candidates:
+
+        lowered = url.lower()
+
+        if (
+            "newsearch" in lowered
+            and "geram18" not in lowered
+        ):
+            continue
+
+        if (
+            "search" in lowered
+            and "chart" not in lowered
+            and "geram18" not in lowered
+        ):
+            continue
+
+        if _looks_like_endpoint(
+            url
+        ):
+            filtered.append(
+                url
+            )
+
+    filtered = sorted(
+        set(filtered),
+        key=lambda item: (
+            -_endpoint_score(item),
+            item,
         ),
-        reverse=True,
     )
 
-    best_candidate = candidate_series[0]
+    print(
+        f"🎯 PRIORITIZED ENDPOINTS: "
+        f"{len(filtered)}",
+        flush=True,
+    )
 
-    result = best_candidate[
-        "points"
-    ]
+    # --------------------------------------------------------
+    # Probe only best candidates
+    # --------------------------------------------------------
+
+    all_points = []
+
+    for url in filtered[
+        :MAX_ENDPOINTS_TO_PROBE
+    ]:
+
+        points = _probe_endpoint(
+            url
+        )
+
+        if points:
+            all_points.extend(
+                points
+            )
+
+            # اگر یک endpoint واقعاً intraday داد
+            # فعلاً endpointهای ضعیف‌تر را هم می‌توانیم
+            # بررسی کنیم، اما این سری را نگه می‌داریم.
+
+    # --------------------------------------------------------
+    # Deduplicate
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for point in all_points:
+
+        unique[
+            point["timestamp_ms"]
+        ] = point
+
+    result = list(
+        unique.values()
+    )
+
+    result.sort(
+        key=lambda x: x[
+            "timestamp_ms"
+        ]
+    )
 
     print(
-        "✅ TGJU SELECTED SERIES:",
+        "",
         flush=True,
     )
 
     print(
-        f"   points={len(result)}",
+        f"📊 DISCOVERY TOTAL POINTS: "
+        f"{len(result)}",
         flush=True,
     )
 
     print(
-        f"   first={result[0]['timestamp'].isoformat()}",
-        flush=True,
-    )
-
-    print(
-        f"   last={result[-1]['timestamp'].isoformat()}",
-        flush=True,
-    )
-
-    print(
-        "-" * 70,
+        "=" * 80,
         flush=True,
     )
 
@@ -1337,24 +1482,14 @@ def extract_price_series(html):
 
 
 # ============================================================
-# EXTRACT ONLY REAL RECENT INTRADAY POINTS
+# SELECT REAL INTRADAY DATA
 # ============================================================
 
-def extract_recent_intraday_points(series):
-
-    """
-    از سری تاریخی TGJU فقط بخش واقعاً اخیر را جدا می‌کند.
-
-    هدف:
-        جلوگیری از ورود نقاط تاریخی به candle builder.
-
-    نکته:
-        این تابع candle نمی‌سازد.
-        فقط داده‌ی خام مناسب برای ذخیره را انتخاب می‌کند.
-    """
+def extract_recent_intraday_points(
+    series,
+):
 
     if not series:
-
         return []
 
     now = datetime.now(
@@ -1372,8 +1507,9 @@ def extract_recent_intraday_points(series):
         point
         for point in series
         if (
-            point["timestamp"] >= window_start
-            and point["timestamp"] <= now + timedelta(
+            window_start
+            <= point["timestamp"]
+            <= now + timedelta(
                 minutes=2
             )
         )
@@ -1392,7 +1528,7 @@ def extract_recent_intraday_points(series):
         )
 
         print(
-            f"   historical points: {len(series)}",
+            f"   source points: {len(series)}",
             flush=True,
         )
 
@@ -1402,101 +1538,72 @@ def extract_recent_intraday_points(series):
         )
 
         print(
-            "   ❌ Not enough recent points "
-            "for intraday storage.",
-            flush=True,
-        )
-
-        print(
-            "   Historical data will NOT be saved "
-            "as intraday data.",
+            "   ❌ Not enough recent intraday points.",
             flush=True,
         )
 
         return []
 
     recent.sort(
-        key=lambda x: x["timestamp_ms"]
+        key=lambda x: x[
+            "timestamp_ms"
+        ]
     )
 
     # --------------------------------------------------------
-    # Check consecutive gaps.
-    #
-    # If the recent data suddenly contains a large gap,
-    # we keep only the latest continuous segment.
+    # Build continuous segments
     # --------------------------------------------------------
 
     segments = []
-    current_segment = [
+
+    current = [
         recent[0]
     ]
 
-    for previous, current in zip(
+    for previous, point in zip(
         recent[:-1],
         recent[1:],
     ):
 
-        delta_seconds = (
-            current["timestamp_ms"]
+        delta = (
+            point["timestamp_ms"]
             - previous["timestamp_ms"]
         ) / 1000
 
         if (
-            delta_seconds > 0
-            and delta_seconds <= MAX_INTRADAY_GAP_SECONDS
+            delta > 0
+            and delta <= MAX_INTRADAY_GAP_SECONDS
         ):
 
-            current_segment.append(
-                current
+            current.append(
+                point
             )
 
         else:
 
-            if len(current_segment) >= MIN_INTRADAY_POINTS:
-
+            if len(current) >= MIN_INTRADAY_POINTS:
                 segments.append(
-                    current_segment
+                    current
                 )
 
-            current_segment = [
-                current
+            current = [
+                point
             ]
 
-    if len(current_segment) >= MIN_INTRADAY_POINTS:
-
+    if len(current) >= MIN_INTRADAY_POINTS:
         segments.append(
-            current_segment
+            current
         )
 
     if not segments:
 
         print(
-            "",
-            flush=True,
-        )
-
-        print(
-            "⚠️ TGJU INTRADAY FILTER:",
-            flush=True,
-        )
-
-        print(
-            "   Recent points exist, "
-            "but they are not a continuous intraday series.",
-            flush=True,
-        )
-
-        print(
-            "   ❌ Nothing will be saved "
-            "to the intraday pipeline.",
+            "⚠️ TGJU: recent points are not "
+            "a continuous intraday series.",
             flush=True,
         )
 
         return []
-
-    # --------------------------------------------------------
-    # Select the latest continuous segment.
-    # --------------------------------------------------------
 
     selected = max(
         segments,
@@ -1511,72 +1618,59 @@ def extract_recent_intraday_points(series):
     )
 
     print(
-        "✅ TGJU INTRADAY FILTER:",
+        "✅ REAL TGJU INTRADAY SERIES:",
         flush=True,
     )
 
     print(
-        f"   source points: {len(series)}",
+        f"   points={len(selected)}",
         flush=True,
     )
 
     print(
-        f"   recent points: {len(recent)}",
+        f"   first={selected[0]['timestamp'].isoformat()}",
         flush=True,
     )
 
     print(
-        f"   selected points: {len(selected)}",
-        flush=True,
-    )
-
-    print(
-        f"   first: "
-        f"{selected[0]['timestamp'].isoformat()}",
-        flush=True,
-    )
-
-    print(
-        f"   last : "
-        f"{selected[-1]['timestamp'].isoformat()}",
+        f"   last={selected[-1]['timestamp'].isoformat()}",
         flush=True,
     )
 
     intervals = []
 
-    for previous, current in zip(
+    for previous, point in zip(
         selected[:-1],
         selected[1:],
     ):
 
-        delta_seconds = (
-            current["timestamp_ms"]
+        delta = (
+            point["timestamp_ms"]
             - previous["timestamp_ms"]
         ) / 1000
 
-        if delta_seconds > 0:
-
+        if delta > 0:
             intervals.append(
-                delta_seconds
+                delta
             )
 
     if intervals:
 
         print(
-            f"   avg interval: "
-            f"{sum(intervals) / len(intervals):.2f} sec",
+            f"   avg interval="
+            f"{sum(intervals) / len(intervals):.2f}s",
             flush=True,
         )
 
         print(
-            f"   min interval: "
-            f"{min(intervals):.2f} sec",
+            f"   min interval="
+            f"{min(intervals):.2f}s",
             flush=True,
         )
 
         print(
-            f"   max interval: "
-            f"{max(intervals):.2f} sec",
+            f"   max interval="
+            f"{max(intervals):.2f}s",
             flush=True,
         )
 
@@ -1584,144 +1678,17 @@ def extract_recent_intraday_points(series):
 
 
 # ============================================================
-# PRINT SERIES DIAGNOSTIC
+# SAVE
 # ============================================================
 
-def print_series_diagnostic(series):
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "🕯️ TGJU INTRADAY SERIES",
-        flush=True,
-    )
-
-    print(
-        "-" * 60,
-        flush=True,
-    )
+def save_intraday_series(
+    series,
+):
 
     if not series:
 
         print(
-            "❌ No TGJU price series found.",
-            flush=True,
-        )
-
-        print(
-            "-" * 60,
-            flush=True,
-        )
-
-        return
-
-    print(
-        f"📊 POINTS FOUND: {len(series)}",
-        flush=True,
-    )
-
-    first = series[0]
-    last = series[-1]
-
-    print(
-        f"🕐 FIRST: "
-        f"{first['timestamp'].isoformat()} "
-        f"| {first['price']:,.0f}",
-        flush=True,
-    )
-
-    print(
-        f"🕐 LAST : "
-        f"{last['timestamp'].isoformat()} "
-        f"| {last['price']:,.0f}",
-        flush=True,
-    )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "📈 LAST 10 POINTS:",
-        flush=True,
-    )
-
-    for point in series[-10:]:
-
-        print(
-            f"   {point['timestamp'].isoformat()} "
-            f"| {point['price']:,.0f}",
-            flush=True,
-        )
-
-    print(
-        "",
-        flush=True,
-    )
-
-    intervals = []
-
-    for previous, current in zip(
-        series[-50:-1],
-        series[-49:],
-    ):
-
-        delta = (
-            current["timestamp_ms"]
-            - previous["timestamp_ms"]
-        )
-
-        if delta > 0:
-
-            intervals.append(
-                delta / 1000
-            )
-
-    if intervals:
-
-        average_interval = (
-            sum(intervals)
-            / len(intervals)
-        )
-
-        print(
-            f"⏱️ AVG SAMPLE INTERVAL: "
-            f"{average_interval:.2f} sec",
-            flush=True,
-        )
-
-        print(
-            f"⏱️ MIN SAMPLE INTERVAL: "
-            f"{min(intervals):.2f} sec",
-            flush=True,
-        )
-
-        print(
-            f"⏱️ MAX SAMPLE INTERVAL: "
-            f"{max(intervals):.2f} sec",
-            flush=True,
-        )
-
-    print(
-        "-" * 60,
-        flush=True,
-    )
-
-
-# ============================================================
-# SAVE RAW TGJU SERIES
-# ============================================================
-
-def save_intraday_series(series):
-
-    if not series:
-
-        print(
-            "⚠️ TGJU: no intraday points to save.",
+            "⚠️ TGJU: no intraday data to save.",
             flush=True,
         )
 
@@ -1731,10 +1698,6 @@ def save_intraday_series(series):
             "duplicates": 0,
         }
 
-    # --------------------------------------------------------
-    # CRITICAL SAFETY FILTER
-    # --------------------------------------------------------
-
     safe_series = extract_recent_intraday_points(
         series
     )
@@ -1742,8 +1705,8 @@ def save_intraday_series(series):
     if not safe_series:
 
         print(
-            "🛑 TGJU: historical series blocked "
-            "from intraday database.",
+            "🛑 TGJU: data blocked. "
+            "No valid intraday series.",
             flush=True,
         )
 
@@ -1759,9 +1722,9 @@ def save_intraday_series(series):
     )
 
     print(
-        "💾 TGJU RAW INTRADAY SERIES: "
-        f"received={len(safe_series)} "
-        f"saved={result['saved']} "
+        "💾 TGJU RAW INTRADAY:",
+        f"received={len(safe_series)}",
+        f"saved={result['saved']}",
         f"duplicates={result['duplicates']}",
         flush=True,
     )
@@ -1770,7 +1733,7 @@ def save_intraday_series(series):
 
 
 # ============================================================
-# MAIN COLLECTOR
+# MAIN
 # ============================================================
 
 def get_gold_18k():
@@ -1785,56 +1748,150 @@ def get_gold_18k():
         response = fetch_tgju_page()
 
         print(
-            f"🌐 TGJU HTTP: {response.status_code}",
+            f"🌐 TGJU HTTP: "
+            f"{response.status_code}",
             flush=True,
         )
 
         html = response.text
 
         # ====================================================
-        # ENDPOINT DISCOVERY
+        # 1. PRICE FROM HTML
         # ====================================================
 
-        debug_tgju_endpoints(
-            html,
-            TGJU_URL,
-        )
-
-        # ====================================================
-        # CURRENT PRICE
-        # ====================================================
-
-        price = extract_current_price(
+        html_price = extract_current_price(
             html
         )
 
         # ====================================================
-        # PRICE SERIES
+        # 2. LIVE CALL5
         # ====================================================
 
-        series = extract_price_series(
+        live_point = fetch_live_call5()
+
+        if live_point:
+
+            price = int(
+                live_point["price"]
+            )
+
+        else:
+
+            price = html_price
+
+        # ====================================================
+        # 3. EXISTING HTML CHART
+        # ====================================================
+
+        historical_series = extract_price_series(
             html
         )
 
-        print_series_diagnostic(
-            series
+        # ====================================================
+        # 4. FIND REAL LIVE/CHART ENDPOINT
+        # ====================================================
+
+        discovered_series = (
+            discover_intraday_endpoints(
+                html
+            )
         )
 
         # ====================================================
-        # SAVE ONLY SAFE INTRADAY DATA
+        # 5. COMBINE
+        # ====================================================
+
+        combined = []
+
+        combined.extend(
+            discovered_series
+        )
+
+        # live point is useful as the newest point,
+        # but alone it must NEVER create candles.
+        if live_point:
+
+            combined.append(
+                live_point
+            )
+
+        # Historical chart is included only for diagnostics.
+        # It will be filtered out before storage if daily.
+        combined.extend(
+            historical_series
+        )
+
+        unique = {}
+
+        for point in combined:
+
+            unique[
+                point["timestamp_ms"]
+            ] = point
+
+        combined = list(
+            unique.values()
+        )
+
+        combined.sort(
+            key=lambda x: x[
+                "timestamp_ms"
+            ]
+        )
+
+        # ====================================================
+        # 6. DIAGNOSTIC
+        # ====================================================
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            "🕯️ TGJU FINAL SERIES:",
+            flush=True,
+        )
+
+        print(
+            f"   total points={len(combined)}",
+            flush=True,
+        )
+
+        if combined:
+
+            print(
+                f"   first="
+                f"{combined[0]['timestamp'].isoformat()}",
+                flush=True,
+            )
+
+            print(
+                f"   last="
+                f"{combined[-1]['timestamp'].isoformat()}",
+                flush=True,
+            )
+
+        # ====================================================
+        # 7. SAVE ONLY REAL INTRADAY
         # ====================================================
 
         save_intraday_series(
-            series
+            combined
         )
 
         # ====================================================
-        # TIMESTAMP
+        # 8. RESULT
         # ====================================================
 
         timestamp = datetime.now(
             timezone.utc
         ).isoformat()
+
+        print(
+            "",
+            flush=True,
+        )
 
         print(
             f"🟢 TGJU: "
@@ -1848,13 +1905,13 @@ def get_gold_18k():
             "currency": "IRR",
             "timestamp": timestamp,
             "source": "tgju",
-            "series": series,
+            "series": combined,
         }
 
     except requests.RequestException as error:
 
         print(
-            "🔴 TGJU REQUEST ERROR: "
+            "🔴 TGJU REQUEST ERROR:",
             f"{type(error).__name__}: {error}",
             flush=True,
         )
@@ -1864,7 +1921,7 @@ def get_gold_18k():
     except Exception as error:
 
         print(
-            "🔴 TGJU ERROR: "
+            "🔴 TGJU ERROR:",
             f"{type(error).__name__}: {error}",
             flush=True,
         )
