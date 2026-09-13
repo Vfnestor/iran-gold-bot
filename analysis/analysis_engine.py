@@ -2171,7 +2171,7 @@ def run_analysis():
         )
         print(
             "📡 LIVE 5M CANDLES:",
-            flush(candles_5m),
+            len(candles_5m),
             flush=True,
     )
 
