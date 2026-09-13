@@ -2173,7 +2173,7 @@ def run_analysis():
             "📡 LIVE 5M CANDLES:",
             flush(candles_5m),
             flush=True,
-        )
+    )
 
         if len(candles_5m) < MIN_CANDLES_FOR_ANALYSIS:
             print(
